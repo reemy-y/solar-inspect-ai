@@ -129,7 +129,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             yaxis=dict(gridcolor=BORDER),
             margin=dict(l=30, r=20, t=40, b=30),
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, use_container_width=True, key="dst_fig_bar")
 
         # ── Real scans table
         section("REAL SCAN RECORDS")
@@ -212,7 +212,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         font=dict(color=TXT_M), showlegend=False,
         margin=dict(l=10, r=10, t=10, b=10),
     )
-    st.plotly_chart(fig_pie, use_container_width=True)
+    st.plotly_chart(fig_pie, use_container_width=True, key="dst_fig_pie")
 
     # Paginated raw table
     section("RAW DATA TABLE")
@@ -367,7 +367,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         yaxis=dict(gridcolor=BORDER, title="kWh"),
         margin=dict(l=40, r=20, t=20, b=40),
     )
-    st.plotly_chart(fig1, use_container_width=True)
+    st.plotly_chart(fig1, use_container_width=True, key="dst_fig1")
 
     # ────────────────────────────────────────────────────────────────
     # CHART 2 — Defect distribution pie
@@ -401,7 +401,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             showlegend=False,
             margin=dict(l=10, r=10, t=10, b=10),
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, use_container_width=True, key="dst_fig2")
 
     with col_bar:
         section("AVG POWER BY PANEL", "متوسط الطاقة لكل لوح")
@@ -422,7 +422,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             yaxis=dict(gridcolor=BORDER, title="kW"),
             margin=dict(l=40, r=20, t=20, b=40),
         )
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, use_container_width=True, key="dst_fig3")
 
     # ────────────────────────────────────────────────────────────────
     # CHART 3 — Irradiation vs AC Power scatter (prediction insight)
@@ -455,7 +455,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         yaxis=dict(gridcolor=BORDER, title="AC Power (kW)"),
         margin=dict(l=40, r=60, t=20, b=40),
     )
-    st.plotly_chart(fig4, use_container_width=True)
+    st.plotly_chart(fig4, use_container_width=True, key="dst_fig4")
     st.caption(
         t(
             "Colour = efficiency %. Green = high efficiency, Red = low. "
