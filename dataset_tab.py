@@ -345,68 +345,32 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             )
 
     # ────────────────────────────────────────────────────────────────
-    # CHART 1 — Daily AC power over time
+    # CHART 1 — Daily AC power over time (synthetic data only)
     # ────────────────────────────────────────────────────────────────
-    section("DAILY ENERGY OUTPUT", "الطاقة اليومية")
-
-    daily = fdf.groupby("date")["ac_power_kw"].sum().reset_index()
-    daily.columns = ["date", "total_ac_kwh"]
-
-    fig1 = go.Figure()
-    fig1.add_trace(go.Scatter(
-        x=daily["date"], y=daily["total_ac_kwh"],
-        mode="lines", fill="tozeroy",
-        line=dict(color="#f5a623", width=2),
-        fillcolor="rgba(245,166,35,0.12)",
-        name=t("Daily Energy (kWh)", "الطاقة اليومية"),
-    ))
-    fig1.update_layout(
-        height=280, paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
-        font=dict(color=TXT_M),
-        xaxis=dict(gridcolor=BORDER, title=t("Date", "التاريخ")),
-        yaxis=dict(gridcolor=BORDER, title="kWh"),
-        margin=dict(l=40, r=20, t=20, b=40),
-    )
-    st.plotly_chart(fig1, use_container_width=True, key="dst_fig1")
-
-    # ────────────────────────────────────────────────────────────────
-    # CHART 2 — Defect distribution pie
-    # ────────────────────────────────────────────────────────────────
-    col_pie, col_bar = st.columns(2)
-
-    with col_pie:
-        section("DEFECT DISTRIBUTION", "توزيع العيوب")
-        defect_counts = fdf["defect_type"].value_counts().reset_index()
-        defect_counts.columns = ["defect", "count"]
-
-        COLORS = {
-            "Clean":              "#2ecc71",
-            "Dusty":              "#3498db",
-            "Bird-drop":          "#f5a623",
-            "Electrical-damage":  "#e74c3c",
-            "Physical-damage":    "#c0392b",
-            "Snow-covered":       "#9b59b6",
-        }
-        fig2 = go.Figure(go.Pie(
-            labels=defect_counts["defect"],
-            values=defect_counts["count"],
-            marker_colors=[COLORS.get(d, "#aaa") for d in defect_counts["defect"]],
-            hole=0.45,
-            textinfo="percent+label",
-            textfont=dict(color=TXT, size=11),
+    if "ac_power_kw" in fdf.columns and fdf["ac_power_kw"].notna().any():
+        section("DAILY ENERGY OUTPUT", "الطاقة اليومية")
+        daily = fdf.groupby("date")["ac_power_kw"].sum().reset_index()
+        daily.columns = ["date", "total_ac_kwh"]
+        fig1 = go.Figure()
+        fig1.add_trace(go.Scatter(
+            x=daily["date"], y=daily["total_ac_kwh"],
+            mode="lines", fill="tozeroy",
+            line=dict(color="#f5a623", width=2),
+            fillcolor="rgba(245,166,35,0.12)",
         ))
-        fig2.update_layout(
-            height=280, paper_bgcolor=BG_CARD,
+        fig1.update_layout(
+            height=260, paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
             font=dict(color=TXT_M),
-            showlegend=False,
-            margin=dict(l=10, r=10, t=10, b=10),
+            xaxis=dict(gridcolor=BORDER, title=t("Date","التاريخ")),
+            yaxis=dict(gridcolor=BORDER, title="kWh"),
+            margin=dict(l=40, r=20, t=20, b=40),
         )
-        st.plotly_chart(fig2, use_container_width=True, key="dst_fig2")
+        st.plotly_chart(fig1, use_container_width=True, key="dst_fig1")
 
-    with col_bar:
+    # ── Avg power by panel (bar) — only if ac_power_kw column has data
+    if "ac_power_kw" in fdf.columns and fdf["ac_power_kw"].notna().any():
         section("AVG POWER BY PANEL", "متوسط الطاقة لكل لوح")
         panel_power = fdf.groupby("panel_id")["ac_power_kw"].mean().reset_index()
-
         fig3 = go.Figure(go.Bar(
             x=panel_power["panel_id"],
             y=panel_power["ac_power_kw"],
@@ -416,7 +380,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             textfont=dict(color=TXT_M, size=10),
         ))
         fig3.update_layout(
-            height=280, paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
+            height=260, paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
             font=dict(color=TXT_M),
             xaxis=dict(gridcolor=BORDER),
             yaxis=dict(gridcolor=BORDER, title="kW"),
@@ -424,86 +388,8 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         )
         st.plotly_chart(fig3, use_container_width=True, key="dst_fig3")
 
-    # ────────────────────────────────────────────────────────────────
-    # CHART 3 — Irradiation vs AC Power scatter (prediction insight)
-    # ────────────────────────────────────────────────────────────────
-    section("IRRADIATION vs POWER (Prediction Insight)", "الإشعاع مقابل الطاقة")
 
-    sample = fdf.sample(min(800, len(fdf)), random_state=1)   # cap for performance
-    fig4 = go.Figure(go.Scatter(
-        x=sample["irradiation"],
-        y=sample["ac_power_kw"],
-        mode="markers",
-        marker=dict(
-            color=sample["efficiency_pct"],
-            colorscale="RdYlGn",
-            size=5,
-            opacity=0.7,
-            colorbar=dict(title="Efficiency %", tickfont=dict(color=TXT_M)),
-        ),
-        text=sample["defect_type"],
-        hovertemplate=(
-            "Irradiation: %{x:.3f}<br>"
-            "AC Power: %{y:.3f} kW<br>"
-            "Defect: %{text}<extra></extra>"
-        ),
-    ))
-    fig4.update_layout(
-        height=320, paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
-        font=dict(color=TXT_M),
-        xaxis=dict(gridcolor=BORDER, title=t("Irradiation (W/m²/1000)", "الإشعاع")),
-        yaxis=dict(gridcolor=BORDER, title="AC Power (kW)"),
-        margin=dict(l=40, r=60, t=20, b=40),
-    )
-    st.plotly_chart(fig4, use_container_width=True, key="dst_fig4")
-    st.caption(
-        t(
-            "Colour = efficiency %. Green = high efficiency, Red = low. "
-            "Hover over a point to see the defect type.",
-            "اللون = نسبة الكفاءة. أخضر = عالي، أحمر = منخفض.",
-        )
-    )
 
-    # ────────────────────────────────────────────────────────────────
-    # DATA TABLE — paginated, searchable
-    # ────────────────────────────────────────────────────────────────
-    section("RAW DATA TABLE", "جدول البيانات الخام")
-
-    show_cols = [
-        "timestamp", "panel_id", "defect_type",
-        "irradiation", "ac_power_kw", "efficiency_pct",
-    ]
-    display_df = fdf[show_cols].sort_values("timestamp", ascending=False)
-
-    rows_per_page = 20
-    total_pages   = max(1, (len(display_df) - 1) // rows_per_page + 1)
-    page = st.number_input(
-        t(f"Page (1–{total_pages})", f"الصفحة (1-{total_pages})"),
-        min_value=1, max_value=total_pages, value=1, step=1, key="ds_page"
-    )
-    start = (page - 1) * rows_per_page
-    st.dataframe(
-        display_df.iloc[start : start + rows_per_page],
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.caption(
-        t(
-            f"Showing rows {start+1}–{min(start+rows_per_page, len(display_df))} "
-            f"of {len(display_df):,} filtered rows.",
-            f"عرض الصفوف {start+1}–{min(start+rows_per_page, len(display_df))} "
-            f"من {len(display_df):,} صفاً.",
-        )
-    )
-
-    # ── CSV download of filtered data
-    csv_bytes = display_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        label=t("⬇️ Download Filtered Data (CSV)", "⬇️ تحميل البيانات المفلترة"),
-        data=csv_bytes,
-        file_name=f"solar_filtered_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
-        mime="text/csv",
-    )
 
     # ────────────────────────────────────────────────────────────────
     # QUICK PREDICT from dataset row

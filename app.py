@@ -186,33 +186,37 @@ DATASET_PATH = os.path.join("data", "solar_data.csv")
 
 def _append_scan_to_csv(email: str, pred_class: str, confidence: float, severity: str):
     """
-    Append a scan result to the CSV dataset so it appears in the Dataset page.
-    Adds a row with the scan's defect type, confidence, and timestamp.
-    Creates the CSV with headers if it doesn't exist yet.
+    Append a scan to the CSV dataset matching existing columns exactly.
+    Reads the header first so the row always has the right number of fields.
     """
     os.makedirs("data", exist_ok=True)
     now = datetime.now()
-    new_row = {
-        "timestamp":      now.strftime("%Y-%m-%d %H:%M"),
-        "date":           now.strftime("%Y-%m-%d"),
-        "hour":           now.hour,
-        "panel_id":       email,          # user email used as panel identifier
-        "irradiation":    "",             # not available from image scan
-        "ambient_temp_c": "",
-        "module_temp_c":  "",
-        "dc_power_kw":    "",
-        "ac_power_kw":    "",
-        "defect_type":    pred_class,
-        "efficiency_pct": "",
-        "confidence":     round(confidence * 100, 1),
-        "severity":       severity,
-        "source":         "scan",         # marks this row as coming from a real scan
-    }
-    row_df = pd.DataFrame([new_row])
+
     if os.path.exists(DATASET_PATH):
-        row_df.to_csv(DATASET_PATH, mode="a", header=False, index=False)
+        existing_cols = pd.read_csv(DATASET_PATH, nrows=0).columns.tolist()
     else:
-        row_df.to_csv(DATASET_PATH, mode="w", header=True, index=False)
+        existing_cols = [
+            "timestamp","date","hour","panel_id",
+            "irradiation","ambient_temp_c","module_temp_c",
+            "dc_power_kw","ac_power_kw","defect_type","efficiency_pct",
+            "confidence","severity","source",
+        ]
+
+    # Build row with empty string for every column, then fill what we know
+    new_row = {col: "" for col in existing_cols}
+    new_row["timestamp"]   = now.strftime("%Y-%m-%d %H:%M")
+    new_row["date"]        = now.strftime("%Y-%m-%d")
+    new_row["hour"]        = now.hour
+    new_row["panel_id"]    = email
+    new_row["defect_type"] = pred_class
+    if "confidence"  in new_row: new_row["confidence"]  = round(confidence * 100, 1)
+    if "severity"    in new_row: new_row["severity"]    = severity
+    if "source"      in new_row: new_row["source"]      = "scan"
+
+    # Enforce exact column order before writing
+    row_df = pd.DataFrame([new_row])[existing_cols]
+    write_header = not os.path.exists(DATASET_PATH)
+    row_df.to_csv(DATASET_PATH, mode="a", header=write_header, index=False)
 
 def db_save_scan(email: str, pred_class: str, info: dict, confidence: float):
     """
