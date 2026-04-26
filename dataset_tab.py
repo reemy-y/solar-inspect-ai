@@ -156,13 +156,13 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
     f1, f2, f3 = st.columns(3)
     with f1:
         panels  = ["All"] + sorted(df["panel_id"].dropna().unique().tolist())
-        sel_panel = st.selectbox(t("User / Panel", "المستخدم"), panels, key="ds_panel")
+        sel_panel = st.selectbox(t("User / Panel", "المستخدم"), panels, key="dst_panel")
     with f2:
         defects = ["All"] + sorted(df["defect_type"].dropna().unique().tolist())
-        sel_defect = st.selectbox(t("Defect Type", "نوع العيب"), defects, key="ds_defect")
+        sel_defect = st.selectbox(t("Defect Type", "نوع العيب"), defects, key="dst_defect")
     with f3:
         sources = ["All", "Real Scans", "Synthetic"]
-        sel_source = st.selectbox(t("Source", "المصدر"), sources, key="ds_source")
+        sel_source = st.selectbox(t("Source", "المصدر"), sources, key="dst_source")
 
     fdf = df.copy()
     if sel_panel  != "All":    fdf = fdf[fdf["panel_id"]   == sel_panel]
@@ -222,7 +222,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
     total_pages   = max(1, (len(display_df) - 1) // rows_per_page + 1)
     page = st.number_input(
         t(f"Page (1–{total_pages})", f"الصفحة"), min_value=1,
-        max_value=total_pages, value=1, step=1, key="ds_page"
+        max_value=total_pages, value=1, step=1, key="dst_page"
     )
     start = (page - 1) * rows_per_page
     st.dataframe(display_df.iloc[start:start + rows_per_page], use_container_width=True, hide_index=True)
