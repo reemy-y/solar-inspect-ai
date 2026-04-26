@@ -105,12 +105,11 @@ def render_auth_page():
         submitted2 = False
 
         with tab_login:
-            # FIX 5: enter_to_submit=False removes the "Press Enter to submit" tooltip
-            with st.form("login_form", enter_to_submit=False):
+            # FIX 2: enter_to_submit=True enables Enter key to submit login
+            with st.form("login_form", enter_to_submit=True):
                 email    = st.text_input("Email", placeholder="you@example.com")
                 password = st.text_input("Password", type="password")
                 submitted = st.form_submit_button("Log In", use_container_width=True)
-            # FIX 5: feedback rendered OUTSIDE the form to prevent raw code showing
             if submitted:
                 ok, msg = auth_login(email, password)
                 if ok:
@@ -122,13 +121,12 @@ def render_auth_page():
                     st.error(msg)
 
         with tab_signup:
-            # FIX 5: enter_to_submit=False removes the "Press Enter to submit" tooltip
-            with st.form("signup_form", enter_to_submit=False):
+            # FIX 2: enter_to_submit=True enables Enter key to submit signup
+            with st.form("signup_form", enter_to_submit=True):
                 new_email = st.text_input("Email", placeholder="you@example.com", key="su_email")
                 new_pw    = st.text_input("Password (min 6 chars)", type="password", key="su_pw")
                 new_pw2   = st.text_input("Confirm password",        type="password", key="su_pw2")
                 submitted2 = st.form_submit_button("Create Account", use_container_width=True)
-            # FIX 5: feedback rendered OUTSIDE the form — prevents raw widget code display
             if submitted2:
                 if new_pw != new_pw2:
                     st.error("Passwords do not match.")
@@ -143,14 +141,13 @@ def render_auth_page():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 3. THEME — balanced, readable dark / light palettes
+# 3. THEME — dark mode only (light mode removed)
 # ─────────────────────────────────────────────────────────────────────
 # Initialise all session-state keys used in the app
-# FIX: dark_mode defaults to False → light mode on first login
 for key, default in [
     ("lang",       "en"),
     ("history",    []),
-    ("dark_mode",  False),   # ← changed from True to False (light mode default)
+    ("dark_mode",  True),   # always dark — light mode removed
     ("user_email", ""),
     ("logged_in",  False),
     ("auth_email", ""),
@@ -168,42 +165,23 @@ def t(en, ar):
 RTL   = "direction:rtl;text-align:right;" if st.session_state.lang == "ar" else ""
 FONT  = "'Cairo', sans-serif"  if st.session_state.lang == "ar" else "'Syne', sans-serif"
 IS_AR = st.session_state.lang == "ar"
-DM    = st.session_state.dark_mode
+DM    = True  # always dark
 
-# ── Color palettes
-# Dark: charcoal-navy — not pitch-black, not grey, warm and readable
-# Light: warm off-white — not blinding, comfortable for long sessions
-if DM:
-    BG       = "#1a1f2e"    # main bg — deep navy-charcoal
-    BG_CARD  = "#242938"    # card bg — slightly lighter
-    BG_HERO  = "linear-gradient(135deg,#1f2d42 0%,#1a1f2e 60%)"
-    BORDER   = "#2e3a50"    # subtle borders
-    TXT      = "#e8edf5"    # primary text — near-white, not stark
-    TXT_M    = "#8fa4bd"    # muted text — steel-blue-grey
-    TXT_S    = "#b0c2d8"    # secondary text — lighter blue-grey
-    URG_BG   = "#2a1520"    # urgency box bg
-    URG_C    = "#f07070"    # urgency text — softened red
-    TIP_BG   = "#1e2d40"    # tip card bg
-    TIP_BD   = "#2e4a65"    # tip card border
-    BAR_BG   = "#2e3a50"    # progress bar track
-    HERO_TC  = "#e8edf5"    # hero title
-    INPUT_BG = "#2e3a50"    # input field bg
-else:
-    # Light mode — warm, soft tones; not blinding white
-    BG       = "#f5f6fa"    # main bg — very soft blue-grey, not pure white
-    BG_CARD  = "#ffffff"    # card bg — white with subtle border contrast
-    BG_HERO  = "linear-gradient(135deg,#e8f0fb 0%,#f5f6fa 60%)"
-    BORDER   = "#dde5f0"    # soft blue-grey borders
-    TXT      = "#1c2b3a"    # primary text — deep navy, easy on eyes
-    TXT_M    = "#526070"    # muted text — medium slate
-    TXT_S    = "#3d5468"    # secondary text
-    URG_BG   = "#fff3f3"    # urgency box bg — very light red tint
-    URG_C    = "#c0392b"    # urgency text — clear red
-    TIP_BG   = "#edf4ff"    # tip card bg — faint blue
-    TIP_BD   = "#b8d0ea"    # tip card border
-    BAR_BG   = "#dde5f0"    # progress bar track
-    HERO_TC  = "#1c2b3a"    # hero title
-    INPUT_BG = "#ffffff"    # input field bg
+# ── Dark mode color palette (only one theme now)
+BG       = "#1a1f2e"
+BG_CARD  = "#242938"
+BG_HERO  = "linear-gradient(135deg,#1f2d42 0%,#1a1f2e 60%)"
+BORDER   = "#2e3a50"
+TXT      = "#e8edf5"
+TXT_M    = "#8fa4bd"
+TXT_S    = "#b0c2d8"
+URG_BG   = "#2a1520"
+URG_C    = "#f07070"
+TIP_BG   = "#1e2d40"
+TIP_BD   = "#2e4a65"
+BAR_BG   = "#2e3a50"
+HERO_TC  = "#e8edf5"
+INPUT_BG = "#2e3a50"
 
 # ── Global CSS
 st.markdown(f"""
@@ -764,31 +742,40 @@ with col_ctrl:
         f'<div class="user-badge">👤 {st.session_state.auth_email}</div>',
         unsafe_allow_html=True,
     )
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
+        # FIX 2: Enter key works — toggle language
         if st.button("🌐 AR" if st.session_state.lang == "en" else "🌐 EN"):
             st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
             st.rerun()
     with c2:
-        if st.button("🌙" if DM else "☀️"):
-            st.session_state.dark_mode = not DM
-            st.rerun()
-    with c3:
-        # Logout button
+        # Logout button — FIX 3: theme toggle removed (dark mode only)
         if st.button("🚪"):
             st.session_state.logged_in  = False
             st.session_state.auth_email = ""
             st.rerun()
-    # FIX 2: Removed caption text under icons — icons speak for themselves
 
-# ── Tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    t("🔍 Image Scan",     "🔍 فحص الصورة"),
-    t("📊 Performance",    "📊 الأداء"),
-    t("📈 Power Forecast", "📈 توقع الطاقة"),
-    t("📋 History",        "📋 السجل"),
-    t("📂 Dataset",        "📂 البيانات"),
-])
+# ── Admin check — only reemy-y's email sees the Dataset tab
+# FIX 1: Dataset tab is admin-only
+ADMIN_EMAIL = "reemya185@gmail.com"
+is_admin = st.session_state.auth_email.lower() == ADMIN_EMAIL.lower()
+
+# ── Tabs — Dataset tab only shown to admin
+if is_admin:
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        t("🔍 Image Scan",     "🔍 فحص الصورة"),
+        t("📊 Performance",    "📊 الأداء"),
+        t("📈 Power Forecast", "📈 توقع الطاقة"),
+        t("📋 History",        "📋 السجل"),
+        t("📂 Dataset",        "📂 البيانات"),
+    ])
+else:
+    tab1, tab2, tab3, tab4 = st.tabs([
+        t("🔍 Image Scan",     "🔍 فحص الصورة"),
+        t("📊 Performance",    "📊 الأداء"),
+        t("📈 Power Forecast", "📈 توقع الطاقة"),
+        t("📋 History",        "📋 السجل"),
+    ])
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 1 — IMAGE SCAN
@@ -1049,35 +1036,40 @@ with tab2:
 # ═══════════════════════════════════════════════════════════════
 # TAB 3 — POWER FORECAST
 # ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# TAB 3 — POWER FORECAST
+# FIX 4: If LSTM files missing, show a simulation-based forecast
+#         so the page is always useful, not just an error message.
+# ═══════════════════════════════════════════════════════════════
 with tab3:
     st.markdown(
-        f'<div class="section-title">{t("SOLAR POWER FORECAST ","توقع الطاقة الشمسية ")}</div>',
+        f'<div class="section-title">{t("SOLAR POWER FORECAST","توقع الطاقة الشمسية")}</div>',
         unsafe_allow_html=True,
     )
-    if lstm_model is None:
-        st.warning(t(
-            "LSTM model files not found. Ensure lstm_model.keras, lstm_scaler.pkl, "
-            "lstm_metadata.json and sample_data.csv are present.",
-            "ملفات نموذج LSTM غير موجودة.",
-        ))
-    else:
-        st.markdown(f"""<div class="perf-card">
-            <div style="font-size:0.92rem;color:{TXT_S};">
-                {t('Predict solar power for the next hours based on weather conditions.',
-                   'توقع إنتاج الطاقة للساعات القادمة بناءً على الظروف الجوية.')}
-            </div>
-            <div style="font-size:0.82rem;color:{TXT_M};margin-top:6px;">
-                {t(f"Model R2 = {lstm_meta['r2']:.3f}",f"دقة النموذج R2 = {lstm_meta['r2']:.3f}")}
-            </div></div>""", unsafe_allow_html=True)
 
-        f1,f2,f3 = st.columns(3)
-        with f1: f_irr = st.slider(t("Irradiation","الإشعاع المتوقع"), 0.0, 1.5, 0.7, 0.05)
-        with f2: f_amb = st.slider(t("Ambient Temp (C)","درجة المحيط"), 15.0, 45.0, 28.0, 0.5)
-        with f3: f_mod = st.slider(t("Module Temp (C)","درجة اللوح"), 20.0, 70.0, 40.0, 0.5)
-        steps = st.slider(t("Forecast hours ahead","ساعات التوقع"), 1, 12, 6)
+    # ── Always show the input controls regardless of model availability
+    st.markdown(f"""<div class="perf-card">
+        <div style="font-size:0.92rem;color:{TXT_S};">
+            {t('Predict solar power output for the next hours based on weather conditions.',
+               'توقع إنتاج الطاقة الشمسية للساعات القادمة بناءً على الظروف الجوية.')}
+        </div>
+        <div style="font-size:0.82rem;color:{TXT_M};margin-top:6px;">
+            {t('Adjust the sliders and click Generate Forecast.',
+               'اضبط المؤشرات ثم اضغط توليد التوقع.')}
+        </div>
+    </div>""", unsafe_allow_html=True)
 
-        if st.button(t("Generate Forecast","توليد التوقع"), use_container_width=True):
-            with st.spinner(t("Running LSTM...","جاري تشغيل LSTM...")):
+    f1, f2, f3 = st.columns(3)
+    with f1: f_irr = st.slider(t("Irradiation", "الإشعاع"),       0.0, 1.5, 0.7, 0.05)
+    with f2: f_amb = st.slider(t("Ambient Temp (C)", "درجة المحيط"), 15.0, 45.0, 28.0, 0.5)
+    with f3: f_mod = st.slider(t("Module Temp (C)", "درجة اللوح"),  20.0, 70.0, 40.0, 0.5)
+    steps = st.slider(t("Forecast hours ahead", "ساعات التوقع"), 1, 12, 6)
+
+    if st.button(t("Generate Forecast", "توليد التوقع"), use_container_width=True):
+        with st.spinner(t("Generating forecast...", "جاري توليد التوقع...")):
+
+            if lstm_model is not None:
+                # ── Real LSTM forecast
                 try:
                     import tensorflow as tf
                     seq_len  = lstm_meta["seq_len"]
@@ -1085,7 +1077,6 @@ with tab3:
                     seq_df   = sample_data[features].tail(seq_len).copy()
                     sequence = lstm_scaler.transform(seq_df.values).copy()
                     forecasts, hours = [], []
-
                     for step in range(steps * 4):
                         inp  = sequence[-seq_len:].reshape(1, seq_len, len(features))
                         pred = lstm_model.predict(inp, verbose=0)[0][0]
@@ -1098,44 +1089,76 @@ with tab3:
                         ac_pred = max(0, lstm_scaler.inverse_transform(dummy)[0, -1])
                         forecasts.append(ac_pred)
                         hours.append(f"{(datetime.now().hour + step//4) % 24:02d}:{(step%4)*15:02d}")
-
-                    import plotly.graph_objects as go
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(
-                        x=hours, y=forecasts, mode="lines+markers",
-                        line=dict(color="#f5a623", width=3),
-                        marker=dict(size=6, color="#f5a623"),
-                        fill="tozeroy", fillcolor="rgba(245,166,35,0.1)",
-                    ))
-                    fig.update_layout(
-                        title=dict(text=t("Solar Power Forecast (kW)","توقع الطاقة الشمسية (كيلوواط)"),
-                                   font=dict(color=TXT, size=16)),
-                        xaxis=dict(title=t("Time","الوقت"), color=TXT_M, gridcolor=BORDER),
-                        yaxis=dict(title=t("AC Power (kW)","طاقة AC"), color=TXT_M, gridcolor=BORDER),
-                        paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
-                        font=dict(color=TXT), height=400, showlegend=False,
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    avg_power    = np.mean(forecasts)
-                    max_power    = np.max(forecasts)
-                    total_energy = sum(forecasts) * 0.25 / 1000
-
-                    s1,s2,s3 = st.columns(3)
-                    for col, le, la, val, unit, color in [
-                        (s1,"AVG POWER","متوسط الطاقة",avg_power,"kW","#f5a623"),
-                        (s2,"PEAK POWER","ذروة الطاقة",max_power,"kW","#e74c3c"),
-                        (s3,"EST. ENERGY","الطاقة المتوقعة",total_energy,"MWh","#2ecc71"),
-                    ]:
-                        with col:
-                            st.markdown(f"""<div class="metric-card" style="text-align:center;">
-                                <div class="metric-label">{la if IS_AR else le}</div>
-                                <div class="metric-value" style="color:{color};">{val:,.1f}</div>
-                                <div style="font-size:0.8rem;color:{TXT_M};margin-top:4px;">{unit}</div>
-                            </div>""", unsafe_allow_html=True)
-
+                    model_label = t(f"LSTM Model (R²={lstm_meta.get('r2',0):.3f})", "نموذج LSTM")
                 except Exception as e:
                     st.error(f"Forecast error: {e}")
+                    forecasts, hours, model_label = [], [], ""
+            else:
+                # ── FIX 4: Simulation fallback when LSTM files not present
+                # Uses a physics-based solar power estimate so the page is
+                # always functional. Place lstm_model.keras, lstm_scaler.pkl,
+                # lstm_metadata.json, sample_data.csv in the app root folder
+                # to enable the real ML forecast.
+                forecasts, hours = [], []
+                base_power = f_irr * 3200 * (1 - (f_mod - 25) * 0.004)
+                base_power = max(0, base_power)
+                start_hour = datetime.now().hour
+                for step in range(steps * 4):
+                    hour_of_day = (start_hour + step // 4) % 24
+                    # Solar curve — peaks at midday
+                    solar_factor = max(0, np.sin((hour_of_day - 6) / 14 * np.pi)) if 6 <= hour_of_day <= 20 else 0
+                    noise = np.random.normal(0, base_power * 0.03)
+                    ac_pred = max(0, base_power * solar_factor + noise) / 1000
+                    forecasts.append(ac_pred)
+                    hours.append(f"{hour_of_day:02d}:{(step%4)*15:02d}")
+                model_label = t("Physics Simulation (LSTM files not found)", "محاكاة فيزيائية")
+
+            if forecasts:
+                import plotly.graph_objects as go
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=hours, y=forecasts, mode="lines+markers",
+                    line=dict(color="#f5a623", width=3),
+                    marker=dict(size=6, color="#f5a623"),
+                    fill="tozeroy", fillcolor="rgba(245,166,35,0.1)",
+                    name=model_label,
+                ))
+                fig.update_layout(
+                    title=dict(
+                        text=t("Solar Power Forecast (kW)", "توقع الطاقة الشمسية (كيلوواط)"),
+                        font=dict(color=TXT, size=16)
+                    ),
+                    xaxis=dict(title=t("Time","الوقت"), color=TXT_M, gridcolor=BORDER),
+                    yaxis=dict(title=t("AC Power (kW)","طاقة AC"), color=TXT_M, gridcolor=BORDER),
+                    paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
+                    font=dict(color=TXT), height=400, showlegend=False,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                if lstm_model is None:
+                    st.info(t(
+                        "Showing physics-based simulation. To use the real LSTM model, "
+                        "place these files in your app root folder: "
+                        "lstm_model.keras, lstm_scaler.pkl, lstm_metadata.json, sample_data.csv",
+                        "يتم عرض محاكاة فيزيائية. لاستخدام نموذج LSTM الحقيقي، ضع الملفات في مجلد التطبيق."
+                    ))
+
+                avg_power    = np.mean(forecasts)
+                max_power    = np.max(forecasts)
+                total_energy = sum(forecasts) * 0.25 / 1000
+
+                s1, s2, s3 = st.columns(3)
+                for col, le, la, val, unit, color in [
+                    (s1,"AVG POWER",    "متوسط الطاقة",    avg_power,    "kW",  "#f5a623"),
+                    (s2,"PEAK POWER",   "ذروة الطاقة",     max_power,    "kW",  "#e74c3c"),
+                    (s3,"EST. ENERGY",  "الطاقة المتوقعة", total_energy, "MWh", "#2ecc71"),
+                ]:
+                    with col:
+                        st.markdown(f"""<div class="metric-card" style="text-align:center;">
+                            <div class="metric-label">{la if IS_AR else le}</div>
+                            <div class="metric-value" style="color:{color};">{val:,.2f}</div>
+                            <div style="font-size:0.8rem;color:{TXT_M};margin-top:4px;">{unit}</div>
+                        </div>""", unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 4 — HISTORY (filtered to logged-in user)
@@ -1209,17 +1232,25 @@ with tab4:
             ]
             st.rerun()
 
-with tab5:
-    render_dataset_tab(
-        TXT=TXT,
-        TXT_M=TXT_M,
-        TXT_S=TXT_S,
-        BG_CARD=BG_CARD,
-        BORDER=BORDER,
-        BAR_BG=BAR_BG,
-        IS_AR=IS_AR,
-        DM=DM,
-    )
+if is_admin:
+    with tab5:
+        # FIX 1: Admin-only dataset tab with simplified UI
+        st.markdown(f"""
+        <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:12px;
+             padding:16px 20px;margin-bottom:20px;">
+            <div style="font-size:0.8rem;color:{TXT_M};font-family:Space Mono,monospace;
+                 letter-spacing:2px;margin-bottom:6px;">ADMIN PANEL</div>
+            <div style="font-size:0.92rem;color:{TXT_S};">
+                {t('You are viewing the admin dataset panel. Regular users cannot see this tab.',
+                   'أنت تعرض لوحة البيانات الإدارية. المستخدمون العاديون لا يرون هذا.')}
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        render_dataset_tab(
+            TXT=TXT, TXT_M=TXT_M, TXT_S=TXT_S,
+            BG_CARD=BG_CARD, BORDER=BORDER, BAR_BG=BAR_BG,
+            IS_AR=IS_AR, DM=DM,
+        )
 # ─────────────────────────────────────────────────────────────────────
 # SITE FOOTER — centered, professional, branded
 # ─────────────────────────────────────────────────────────────────────
