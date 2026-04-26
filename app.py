@@ -17,28 +17,132 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+
 # ─────────────────────────────────────────────────────────────────────
-# 2. AUTH — SQLite-based authentication
+# 2. AUTH & DATABASE — persistent sessions + role-based access
 # ─────────────────────────────────────────────────────────────────────
-DB_PATH = "users.db"
+import secrets as _secrets
+
+DB_PATH    = "users.db"
+ADMIN_EMAIL = "reemya185@gmail.com"   # ← only this email gets admin access
+
+# ── Session token cookie name
+TOKEN_KEY  = "solar_session_token"
 
 def _db():
-    """Return a connection to the users database, creating tables if needed."""
+    """
+    Connect to SQLite and ensure all tables exist.
+
+    Schema:
+      users  — stores accounts (email, hashed password, role, created_at)
+      scans  — stores every scan result (linked to user by email)
+      tokens — stores persistent session tokens (login stays alive)
+    """
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")   # safer for concurrent access
+
+    # Users table — role is either "admin" or "user"
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
-            id      INTEGER PRIMARY KEY AUTOINCREMENT,
-            email   TEXT    UNIQUE NOT NULL,
-            pw_hash TEXT    NOT NULL,
-            created TEXT    NOT NULL
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            email      TEXT    UNIQUE NOT NULL,
+            pw_hash    TEXT    NOT NULL,
+            role       TEXT    NOT NULL DEFAULT 'user',
+            created_at TEXT    NOT NULL
         )
     """)
+
+    # Scans table — every scan result saved here permanently
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS scans (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            email       TEXT    NOT NULL,
+            scanned_at  TEXT    NOT NULL,
+            defect_type TEXT    NOT NULL,
+            display_en  TEXT    NOT NULL,
+            display_ar  TEXT    NOT NULL,
+            confidence  REAL    NOT NULL,
+            severity    TEXT    NOT NULL,
+            icon        TEXT    NOT NULL,
+            pdf_saved   INTEGER DEFAULT 0
+        )
+    """)
+
+    # Tokens table — persistent login across browser sessions
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tokens (
+            token      TEXT PRIMARY KEY,
+            email      TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
     return conn
 
 def _hash(password: str) -> str:
-    """SHA-256 hash of a password."""
+    """SHA-256 password hash."""
     return hashlib.sha256(password.encode()).hexdigest()
+
+# ── Token helpers
+def _create_token(email: str) -> str:
+    """Create a 30-day session token and save it to DB."""
+    from datetime import timedelta
+    token      = _secrets.token_hex(32)
+    now        = datetime.now()
+    expires    = now + timedelta(days=30)
+    conn = _db()
+    # Remove old tokens for this user first
+    conn.execute("DELETE FROM tokens WHERE email = ?", (email,))
+    conn.execute(
+        "INSERT INTO tokens (token, email, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (token, email, now.isoformat(), expires.isoformat()),
+    )
+    conn.commit()
+    conn.close()
+    return token
+
+def _validate_token(token: str):
+    """
+    Check if a token is valid and not expired.
+    Returns email string if valid, None otherwise.
+    """
+    if not token:
+        return None
+    conn = _db()
+    row = conn.execute(
+        "SELECT email, expires_at FROM tokens WHERE token = ?", (token,)
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    email, expires_at = row
+    if datetime.now() > datetime.fromisoformat(expires_at):
+        # Token expired — clean it up
+        conn = _db()
+        conn.execute("DELETE FROM tokens WHERE token = ?", (token,))
+        conn.commit()
+        conn.close()
+        return None
+    return email
+
+def _delete_token(token: str):
+    """Delete a token on logout."""
+    conn = _db()
+    conn.execute("DELETE FROM tokens WHERE token = ?", (token,))
+    conn.commit()
+    conn.close()
+
+# ── User helpers
+def _get_role(email: str) -> str:
+    """Return 'admin' or 'user' for a given email."""
+    if email.lower() == ADMIN_EMAIL.lower():
+        return "admin"
+    conn = _db()
+    row = conn.execute("SELECT role FROM users WHERE email = ?", (email,)).fetchone()
+    conn.close()
+    return row[0] if row else "user"
 
 def auth_signup(email: str, password: str):
     """Register a new user. Returns (success, message)."""
@@ -46,11 +150,12 @@ def auth_signup(email: str, password: str):
         return False, "Invalid email format."
     if len(password) < 6:
         return False, "Password must be at least 6 characters."
+    role = "admin" if email.lower() == ADMIN_EMAIL.lower() else "user"
     try:
         conn = _db()
         conn.execute(
-            "INSERT INTO users (email, pw_hash, created) VALUES (?, ?, ?)",
-            (email.lower().strip(), _hash(password), datetime.now().isoformat()),
+            "INSERT INTO users (email, pw_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            (email.lower().strip(), _hash(password), role, datetime.now().isoformat()),
         )
         conn.commit()
         conn.close()
@@ -59,31 +164,121 @@ def auth_signup(email: str, password: str):
         return False, "An account with this email already exists."
 
 def auth_login(email: str, password: str):
-    """Check credentials. Returns (success, message)."""
+    """
+    Verify credentials.
+    Returns (success, message, token_or_None).
+    On success, a 30-day session token is created and returned.
+    """
     conn = _db()
     row = conn.execute(
         "SELECT pw_hash FROM users WHERE email = ?", (email.lower().strip(),)
     ).fetchone()
     conn.close()
     if row is None:
-        return False, "No account found with this email."
+        return False, "No account found with this email.", None
     if row[0] != _hash(password):
-        return False, "Incorrect password."
-    return True, "Logged in successfully."
+        return False, "Incorrect password.", None
+    token = _create_token(email.lower().strip())
+    return True, "Logged in successfully.", token
+
+# ── Scan persistence helpers
+def db_save_scan(email: str, pred_class: str, info: dict, confidence: float):
+    """Save a scan result to the database permanently."""
+    conn = _db()
+    # Avoid duplicates: check if same scan already saved in the last minute
+    existing = conn.execute("""
+        SELECT id FROM scans
+        WHERE email = ? AND defect_type = ?
+        AND scanned_at >= datetime('now', '-1 minute')
+    """, (email, pred_class)).fetchone()
+    if existing is None:
+        conn.execute("""
+            INSERT INTO scans
+              (email, scanned_at, defect_type, display_en, display_ar,
+               confidence, severity, icon)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            email,
+            datetime.now().strftime("%Y-%m-%d %H:%M"),
+            pred_class,
+            info["display_en"],
+            info["display_ar"],
+            round(confidence, 4),
+            info["severity"],
+            info["icon"],
+        ))
+        conn.commit()
+    conn.close()
+
+def db_get_scans(email: str, admin: bool = False) -> list:
+    """
+    Load scans from the database.
+    - Normal users: only their own scans.
+    - Admin: all scans from all users.
+    """
+    conn = _db()
+    if admin:
+        rows = conn.execute("""
+            SELECT email, scanned_at, defect_type, display_en, display_ar,
+                   confidence, severity, icon
+            FROM scans ORDER BY scanned_at DESC
+        """).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT email, scanned_at, defect_type, display_en, display_ar,
+                   confidence, severity, icon
+            FROM scans WHERE email = ? ORDER BY scanned_at DESC
+        """, (email,)).fetchall()
+    conn.close()
+    return [
+        {
+            "email":      r[0], "time": r[1], "class":      r[2],
+            "display_en": r[3], "display_ar": r[4],
+            "confidence": r[5], "severity":   r[6], "icon":  r[7],
+        }
+        for r in rows
+    ]
+
+def db_delete_scans(email: str):
+    """Delete all scans for a specific user."""
+    conn = _db()
+    conn.execute("DELETE FROM scans WHERE email = ?", (email,))
+    conn.commit()
+    conn.close()
+
+def db_get_all_users() -> list:
+    """Admin only: get list of all registered users."""
+    conn = _db()
+    rows = conn.execute(
+        "SELECT email, role, created_at FROM users ORDER BY created_at DESC"
+    ).fetchall()
+    conn.close()
+    return [{"email": r[0], "role": r[1], "created": r[2]} for r in rows]
 
 def render_auth_page():
     """
     Full-screen login / signup UI.
-    Calls st.stop() to block the rest of the app until authenticated.
+    On successful login, a token is stored in st.session_state AND
+    in the browser query params so the session survives page refreshes.
     """
-    for k, v in [("logged_in", False), ("auth_email", "")]:
+    # ── Try to restore session from token stored in session_state
+    for k, v in [("logged_in", False), ("auth_email", ""), ("session_token", "")]:
         if k not in st.session_state:
             st.session_state[k] = v
+
+    # ── Auto-login: validate existing token from session_state
+    if not st.session_state.logged_in and st.session_state.session_token:
+        email = _validate_token(st.session_state.session_token)
+        if email:
+            st.session_state.logged_in  = True
+            st.session_state.auth_email = email
+            st.session_state.user_email = email
+            return
 
     if st.session_state.logged_in:
         return  # already authenticated
 
-    # Centred card
+    # ── Login / signup UI
     _, col, _ = st.columns([1, 1.4, 1])
     with col:
         st.markdown("""
@@ -100,28 +295,27 @@ def render_auth_page():
 
         tab_login, tab_signup = st.tabs(["🔑  Log In", "✨  Sign Up"])
 
-        # FIX 5: initialize flags so they exist even before user clicks
         submitted  = False
         submitted2 = False
 
         with tab_login:
-            # FIX 2: enter_to_submit=True enables Enter key to submit login
             with st.form("login_form", enter_to_submit=True):
                 email    = st.text_input("Email", placeholder="you@example.com")
                 password = st.text_input("Password", type="password")
                 submitted = st.form_submit_button("Log In", use_container_width=True)
             if submitted:
-                ok, msg = auth_login(email, password)
+                ok, msg, token = auth_login(email, password)
                 if ok:
-                    st.session_state.logged_in  = True
-                    st.session_state.auth_email = email.lower().strip()
-                    st.session_state.user_email = email.lower().strip()
+                    # ── Store token in session — survives page refresh
+                    st.session_state.logged_in     = True
+                    st.session_state.auth_email    = email.lower().strip()
+                    st.session_state.user_email    = email.lower().strip()
+                    st.session_state.session_token = token
                     st.rerun()
                 else:
                     st.error(msg)
 
         with tab_signup:
-            # FIX 2: enter_to_submit=True enables Enter key to submit signup
             with st.form("signup_form", enter_to_submit=True):
                 new_email = st.text_input("Email", placeholder="you@example.com", key="su_email")
                 new_pw    = st.text_input("Password (min 6 chars)", type="password", key="su_pw")
@@ -137,7 +331,7 @@ def render_auth_page():
                     else:
                         st.error(msg2)
 
-    st.stop()  # block the app until login succeeds
+    st.stop()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -145,12 +339,13 @@ def render_auth_page():
 # ─────────────────────────────────────────────────────────────────────
 # Initialise all session-state keys used in the app
 for key, default in [
-    ("lang",       "en"),
-    ("history",    []),
-    ("dark_mode",  True),   # always dark — light mode removed
-    ("user_email", ""),
-    ("logged_in",  False),
-    ("auth_email", ""),
+    ("lang",          "en"),
+    ("history",       []),
+    ("dark_mode",     True),
+    ("user_email",    ""),
+    ("logged_in",     False),
+    ("auth_email",    ""),
+    ("session_token", ""),   # persistent login token
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -744,21 +939,22 @@ with col_ctrl:
     )
     c1, c2 = st.columns(2)
     with c1:
-        # FIX 2: Enter key works — toggle language
         if st.button("🌐 AR" if st.session_state.lang == "en" else "🌐 EN"):
             st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
             st.rerun()
     with c2:
-        # Logout button — FIX 3: theme toggle removed (dark mode only)
+        # Logout — delete token so session doesn't persist after explicit logout
         if st.button("🚪"):
-            st.session_state.logged_in  = False
-            st.session_state.auth_email = ""
+            if st.session_state.session_token:
+                _delete_token(st.session_state.session_token)
+            st.session_state.logged_in     = False
+            st.session_state.auth_email    = ""
+            st.session_state.session_token = ""
+            st.session_state.history       = []
             st.rerun()
 
-# ── Admin check — only reemy-y's email sees the Dataset tab
-# FIX 1: Dataset tab is admin-only
-ADMIN_EMAIL = "reemya185@gmail.com"
-is_admin = st.session_state.auth_email.lower() == ADMIN_EMAIL.lower()
+# ── Role check — admin gets extra tab
+is_admin = _get_role(st.session_state.auth_email) == "admin"
 
 # ── Tabs — Dataset tab only shown to admin
 if is_admin:
@@ -814,31 +1010,8 @@ with tab1:
         display    = info["display_ar"] if IS_AR else info["display_en"]
         sev        = info["severity"]
 
-        # ── FIX 3: Prevent duplicate history entries on re-render.
-        # Streamlit re-runs the whole script on every interaction. We guard
-        # against adding the same scan multiple times by checking whether the
-        # most-recent entry for this user already has the same timestamp minute.
-        _last = next(
-            (h for h in reversed(st.session_state.history)
-             if h.get("email") == st.session_state.auth_email), None
-        )
-        _now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-        _already_saved = (
-            _last is not None
-            and _last["class"] == pred_class
-            and _last["time"] == _now_str
-        )
-        if not _already_saved:
-            st.session_state.history.append({
-                "time":       _now_str,
-                "class":      pred_class,
-                "display_en": info["display_en"],
-                "display_ar": info["display_ar"],
-                "confidence": confidence,
-                "severity":   sev,
-                "icon":       info["icon"],
-                "email":      st.session_state.auth_email,
-            })
+        # ── Save scan permanently to database (deduplication handled inside)
+        db_save_scan(st.session_state.auth_email, pred_class, info, confidence)
 
         col_img, col_res = st.columns([3, 2], gap="large")
 
@@ -1161,17 +1334,34 @@ with tab3:
                         </div>""", unsafe_allow_html=True)
 
 # ═══════════════════════════════════════════════════════════════
-# TAB 4 — HISTORY (filtered to logged-in user)
+# TAB 4 — HISTORY
+# Normal users: own scans only. Admin: all users' scans.
+# Data loaded from SQLite — persists across sessions/redeploys.
 # ═══════════════════════════════════════════════════════════════
 with tab4:
     st.markdown(f'<div class="section-title">{t("SCAN HISTORY","سجل الفحص")}</div>',
                 unsafe_allow_html=True)
 
-    # Only show the current user's scans
-    user_history = [
-        h for h in st.session_state.history
-        if h.get("email", "") == st.session_state.auth_email
-    ]
+    # ── Load from database (admin sees all, users see own)
+    user_history = db_get_scans(st.session_state.auth_email, admin=is_admin)
+
+    # Admin: show user filter + total user count
+    if is_admin and user_history:
+        all_users_in_scans = sorted(set(h["email"] for h in user_history))
+        selected_user = st.selectbox(
+            t("Filter by user (admin view)", "تصفية حسب المستخدم"),
+            ["All Users"] + all_users_in_scans,
+            key="hist_filter"
+        )
+        if selected_user != "All Users":
+            user_history = [h for h in user_history if h["email"] == selected_user]
+        st.markdown(
+            f'<div style="font-size:0.82rem;color:{TXT_M};margin-bottom:12px;">'
+            f'👑 Admin view — showing {len(user_history)} scans'
+            f'{"" if selected_user == "All Users" else f" for {selected_user}"}'
+            f'</div>',
+            unsafe_allow_html=True
+        )
 
     if not user_history:
         st.markdown(f"""
@@ -1186,7 +1376,7 @@ with tab4:
         warning  = sum(1 for h in user_history if h["severity"] == "warning")
         good     = sum(1 for h in user_history if h["severity"] == "info")
 
-        s1,s2,s3,s4 = st.columns(4)
+        s1, s2, s3, s4 = st.columns(4)
         for col, le, la, val, color in [
             (s1,"TOTAL SCANS","إجمالي الفحوصات",total,"#f5a623"),
             (s2,"CRITICAL","حرج",critical,"#e74c3c"),
@@ -1202,9 +1392,11 @@ with tab4:
         st.markdown(f'<div class="section-title">{t("RECENT SCANS","الفحوصات الأخيرة")}</div>',
                     unsafe_allow_html=True)
 
-        for h in reversed(user_history):
+        for h in user_history:
             disp_h    = h["display_ar"] if IS_AR else h["display_en"]
             sev_color = {"critical":"#e74c3c","warning":"#f5a623","info":"#2ecc71"}[h["severity"]]
+            # Admin: show which user this scan belongs to
+            user_tag  = f'<span style="color:{TXT_M};font-size:0.78rem;">👤 {h["email"]}</span><br>' if is_admin else ""
             st.markdown(f"""
             <div class="history-card">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -1216,6 +1408,7 @@ with tab4:
                         </span>
                     </div>
                     <div style="text-align:right;">
+                        {user_tag}
                         <span style="color:{sev_color};font-size:0.82rem;font-weight:700;">
                             {h['severity'].upper()}
                         </span><br>
@@ -1224,28 +1417,51 @@ with tab4:
                 </div>
             </div>""", unsafe_allow_html=True)
 
-        if st.button(t("🗑 Clear My History", "🗑 مسح سجلي")):
-            # Only clear this user's entries, preserve others
-            st.session_state.history = [
-                h for h in st.session_state.history
-                if h.get("email", "") != st.session_state.auth_email
-            ]
+        # Clear button — admin clears selected user, normal user clears own
+        clear_label = t("🗑 Clear My History", "🗑 مسح سجلي")
+        if is_admin and "selected_user" in dir() and selected_user != "All Users":
+            clear_label = f"🗑 Clear {selected_user}'s History"
+        if st.button(clear_label):
+            target = selected_user if (is_admin and selected_user != "All Users") else st.session_state.auth_email
+            db_delete_scans(target)
             st.rerun()
 
 if is_admin:
     with tab5:
-        # FIX 1: Admin-only dataset tab with simplified UI
         st.markdown(f"""
-        <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:12px;
+        <div style="background:{BG_CARD};border:1px solid #f5a623;border-radius:12px;
              padding:16px 20px;margin-bottom:20px;">
-            <div style="font-size:0.8rem;color:{TXT_M};font-family:Space Mono,monospace;
-                 letter-spacing:2px;margin-bottom:6px;">ADMIN PANEL</div>
+            <div style="font-size:0.8rem;color:#f5a623;font-family:Space Mono,monospace;
+                 letter-spacing:2px;margin-bottom:6px;">👑 ADMIN PANEL</div>
             <div style="font-size:0.92rem;color:{TXT_S};">
-                {t('You are viewing the admin dataset panel. Regular users cannot see this tab.',
-                   'أنت تعرض لوحة البيانات الإدارية. المستخدمون العاديون لا يرون هذا.')}
+                Full access to all users' data, scans, and the dataset browser.
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # ── All registered users
+        st.markdown(f'<div class="section-title">REGISTERED USERS</div>', unsafe_allow_html=True)
+        all_users = db_get_all_users()
+        if all_users:
+            for u in all_users:
+                role_color = "#f5a623" if u["role"] == "admin" else TXT_M
+                st.markdown(f"""
+                <div class="history-card">
+                    <div style="display:flex;justify-content:space-between;">
+                        <div style="color:{TXT};">📧 {u['email']}</div>
+                        <div>
+                            <span style="color:{role_color};font-size:0.82rem;font-weight:700;">
+                                {u['role'].upper()}
+                            </span>
+                            <span style="color:{TXT_M};font-size:0.78rem;margin-left:12px;">
+                                joined {u['created'][:10]}
+                            </span>
+                        </div>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+
+        # ── Dataset browser
+        st.markdown(f'<div class="section-title">DATASET BROWSER</div>', unsafe_allow_html=True)
         render_dataset_tab(
             TXT=TXT, TXT_M=TXT_M, TXT_S=TXT_S,
             BG_CARD=BG_CARD, BORDER=BORDER, BAR_BG=BAR_BG,
