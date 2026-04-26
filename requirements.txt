@@ -1,31 +1,18 @@
 # ─────────────────────────────────────────────────────────────────────
 # requirements.txt — pin versions so deployment is reproducible
 # ─────────────────────────────────────────────────────────────────────
+--extra-index-url https://download.pytorch.org/whl/cpu
 
-# Core app
 streamlit>=1.35.0
-
-# ML / vision
-torch>=2.2.0
-torchvision>=0.17.0
+torch==2.2.0+cpu
+torchvision==0.17.0+cpu
 timm>=0.9.16
 Pillow>=10.0.0
 numpy>=1.26.0
-
-# Data
 pandas>=2.2.0
 scikit-learn==1.6.1
 joblib>=1.3.0
-
-# PDF
 fpdf2>=2.7.9
 arabic-reshaper>=3.0.0
 python-bidi>=0.4.2
-
-# Charts
 plotly>=5.20.0
-
-# Optional: LSTM forecasting (comment out if not using)
-# tensorflow>=2.16.0
-
-# Auth (built-in to Python — no extra package needed for sqlite3/hashlib)
