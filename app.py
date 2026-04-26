@@ -782,18 +782,13 @@ with col_ctrl:
     # FIX 2: Removed caption text under icons — icons speak for themselves
 
 # ── Tabs
-"""
- 
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     t("🔍 Image Scan",     "🔍 فحص الصورة"),
     t("📊 Performance",    "📊 الأداء"),
     t("📈 Power Forecast", "📈 توقع الطاقة"),
     t("📋 History",        "📋 السجل"),
-    t("📂 Dataset",        "📂 البيانات"),   # ← NEW TAB
+    t("📂 Dataset",        "📂 البيانات"),
 ])
- 
- 
-"""
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 1 — IMAGE SCAN
