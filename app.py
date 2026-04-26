@@ -182,10 +182,46 @@ def auth_login(email: str, password: str):
     return True, "Logged in successfully.", token
 
 # ── Scan persistence helpers
+DATASET_PATH = os.path.join("data", "solar_data.csv")
+
+def _append_scan_to_csv(email: str, pred_class: str, confidence: float, severity: str):
+    """
+    Append a scan result to the CSV dataset so it appears in the Dataset page.
+    Adds a row with the scan's defect type, confidence, and timestamp.
+    Creates the CSV with headers if it doesn't exist yet.
+    """
+    os.makedirs("data", exist_ok=True)
+    now = datetime.now()
+    new_row = {
+        "timestamp":      now.strftime("%Y-%m-%d %H:%M"),
+        "date":           now.strftime("%Y-%m-%d"),
+        "hour":           now.hour,
+        "panel_id":       email,          # user email used as panel identifier
+        "irradiation":    "",             # not available from image scan
+        "ambient_temp_c": "",
+        "module_temp_c":  "",
+        "dc_power_kw":    "",
+        "ac_power_kw":    "",
+        "defect_type":    pred_class,
+        "efficiency_pct": "",
+        "confidence":     round(confidence * 100, 1),
+        "severity":       severity,
+        "source":         "scan",         # marks this row as coming from a real scan
+    }
+    row_df = pd.DataFrame([new_row])
+    if os.path.exists(DATASET_PATH):
+        row_df.to_csv(DATASET_PATH, mode="a", header=False, index=False)
+    else:
+        row_df.to_csv(DATASET_PATH, mode="w", header=True, index=False)
+
 def db_save_scan(email: str, pred_class: str, info: dict, confidence: float):
-    """Save a scan result to the database permanently."""
+    """
+    Save a scan result to:
+      1. SQLite scans table (for history tab)
+      2. data/solar_data.csv (for dataset page)
+    Deduplication prevents the same scan being saved twice within 1 minute.
+    """
     conn = _db()
-    # Avoid duplicates: check if same scan already saved in the last minute
     existing = conn.execute("""
         SELECT id FROM scans
         WHERE email = ? AND defect_type = ?
@@ -208,6 +244,8 @@ def db_save_scan(email: str, pred_class: str, info: dict, confidence: float):
             info["icon"],
         ))
         conn.commit()
+        # Also write to CSV dataset so it appears in the Dataset page
+        _append_scan_to_csv(email, pred_class, confidence, info["severity"])
     conn.close()
 
 def db_get_scans(email: str, admin: bool = False) -> list:
@@ -1010,8 +1048,16 @@ with tab1:
         display    = info["display_ar"] if IS_AR else info["display_en"]
         sev        = info["severity"]
 
-        # ── Save scan permanently to database (deduplication handled inside)
-        db_save_scan(st.session_state.auth_email, pred_class, info, confidence)
+        # ── Save scan ONCE per upload using file hash as guard.
+        # Streamlit reruns the whole script on every click, so we track
+        # which files have already been saved using session_state.
+        import hashlib as _hl
+        file_hash = _hl.md5(uploaded.getvalue()).hexdigest()
+        if "saved_hashes" not in st.session_state:
+            st.session_state.saved_hashes = set()
+        if file_hash not in st.session_state.saved_hashes:
+            db_save_scan(st.session_state.auth_email, pred_class, info, confidence)
+            st.session_state.saved_hashes.add(file_hash)
 
         col_img, col_res = st.columns([3, 2], gap="large")
 

@@ -22,25 +22,224 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 import os
+import sqlite3
 
 DATASET_PATH = os.path.join("data", "solar_data.csv")
 
-# ── Cache so the CSV is read only once per session
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=30)
+# ttl=30 means cache refreshes every 30 seconds so new scans appear quickly
 def load_solar_data() -> pd.DataFrame | None:
     """
-    Load solar_data.csv from the data/ folder.
-    Returns None if the file is not found so the app degrades gracefully.
+    Load the dataset CSV.
+    The file contains both synthetic rows (source='synthetic' or no source col)
+    and real scan rows (source='scan') appended by db_save_scan().
+    Returns None if file doesn't exist yet.
     """
     if not os.path.exists(DATASET_PATH):
         return None
-    df = pd.read_csv(DATASET_PATH, parse_dates=["timestamp", "date"])
+    df = pd.read_csv(DATASET_PATH)
+    # Ensure source column exists
+    if "source" not in df.columns:
+        df["source"] = "synthetic"
+    # Ensure confidence column exists
+    if "confidence" not in df.columns:
+        df["confidence"] = None
+    if "severity" not in df.columns:
+        df["severity"] = None
+    # Parse dates safely
+    df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+    df["date"]      = pd.to_datetime(df["date"],      errors="coerce")
     return df
 
 
 def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
+
+    def t(en, ar):
+        return ar if IS_AR else en
+
+    def section(label):
+        st.markdown(
+            f'<div style="font-family:Space Mono,monospace;font-size:0.72rem;'
+            f'color:{TXT_M};letter-spacing:3px;margin:26px 0 14px;'
+            f'text-transform:uppercase;">{label}</div>',
+            unsafe_allow_html=True,
+        )
+
+    df = load_solar_data()
+
+    if df is None:
+        st.info(t(
+            "No dataset yet. The dataset will be created automatically once "
+            "users start scanning solar panels.",
+            "لا توجد بيانات بعد. ستُنشأ تلقائياً عند بدء المستخدمين الفحص."
+        ))
+        return
+
+    # ── Split real scans vs synthetic data
+    real_scans = df[df["source"] == "scan"].copy()
+    synthetic  = df[df["source"] != "scan"].copy()
+
+    # ── REAL SCANS SUMMARY — shown first, most important
+    section("REAL SCANS FROM USERS")
+
+    if real_scans.empty:
+        st.markdown(
+            f'<div style="color:{TXT_M};font-size:0.9rem;padding:12px 0;">'
+            f'No real scans yet — scans will appear here automatically.</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        total_scans  = len(real_scans)
+        unique_users = real_scans["panel_id"].nunique()
+        defect_counts = real_scans["defect_type"].value_counts()
+
+        k1, k2, k3 = st.columns(3)
+        for col, lbl, val, color in [
+            (k1, "TOTAL SCANS",   str(total_scans),  "#f5a623"),
+            (k2, "UNIQUE USERS",  str(unique_users),  "#2ecc71"),
+            (k3, "MOST COMMON",   defect_counts.index[0] if not defect_counts.empty else "—", "#3498db"),
+        ]:
+            with col:
+                st.markdown(
+                    f'<div style="background:{BG_CARD};border:1px solid {BORDER};'
+                    f'border-radius:12px;padding:16px;text-align:center;">'
+                    f'<div style="font-family:Space Mono,monospace;font-size:0.7rem;'
+                    f'color:{TXT_M};letter-spacing:2px;margin-bottom:6px;">{lbl}</div>'
+                    f'<div style="font-size:1.6rem;font-weight:800;color:{color};">{val}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
+
+        # ── Defect breakdown from real scans
+        st.markdown("<br>", unsafe_allow_html=True)
+        fig_bar = go.Figure(go.Bar(
+            x=defect_counts.index.tolist(),
+            y=defect_counts.values.tolist(),
+            marker_color="#f5a623",
+            text=defect_counts.values.tolist(),
+            textposition="outside",
+            textfont=dict(color=TXT_M, size=11),
+        ))
+        fig_bar.update_layout(
+            title=dict(text="Real Scan Results by Defect Type", font=dict(color=TXT, size=14)),
+            height=260, paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
+            font=dict(color=TXT_M),
+            xaxis=dict(gridcolor=BORDER),
+            yaxis=dict(gridcolor=BORDER),
+            margin=dict(l=30, r=20, t=40, b=30),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+        # ── Real scans table
+        section("REAL SCAN RECORDS")
+        show_cols = ["timestamp", "panel_id", "defect_type", "confidence", "severity"]
+        available = [c for c in show_cols if c in real_scans.columns]
+        real_display = real_scans[available].rename(columns={"panel_id": "user_email"})
+        real_display = real_display.sort_values("timestamp", ascending=False)
+        st.dataframe(real_display, use_container_width=True, hide_index=True)
+
+        # ── Download real scans
+        csv_real = real_display.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            label=t("⬇️ Download Real Scans CSV", "⬇️ تحميل بيانات الفحوصات"),
+            data=csv_real,
+            file_name=f"real_scans_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv",
+            key="dl_real"
+        )
+
+    # ── SYNTHETIC / FULL DATASET section
+    section("FULL DATASET (Synthetic + Real)")
+
+    # Filters
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        panels  = ["All"] + sorted(df["panel_id"].dropna().unique().tolist())
+        sel_panel = st.selectbox(t("User / Panel", "المستخدم"), panels, key="ds_panel")
+    with f2:
+        defects = ["All"] + sorted(df["defect_type"].dropna().unique().tolist())
+        sel_defect = st.selectbox(t("Defect Type", "نوع العيب"), defects, key="ds_defect")
+    with f3:
+        sources = ["All", "Real Scans", "Synthetic"]
+        sel_source = st.selectbox(t("Source", "المصدر"), sources, key="ds_source")
+
+    fdf = df.copy()
+    if sel_panel  != "All":    fdf = fdf[fdf["panel_id"]   == sel_panel]
+    if sel_defect != "All":    fdf = fdf[fdf["defect_type"] == sel_defect]
+    if sel_source == "Real Scans": fdf = fdf[fdf["source"] == "scan"]
+    if sel_source == "Synthetic":  fdf = fdf[fdf["source"] != "scan"]
+
+    # KPI cards
+    section("KEY METRICS")
+    k1, k2, k3, k4 = st.columns(4)
+    ac_col = "ac_power_kw"
+    for col, lbl, val, color in [
+        (k1, "TOTAL ROWS",    f"{len(fdf):,}",                                        "#f5a623"),
+        (k2, "REAL SCANS",    str(len(fdf[fdf["source"]=="scan"])),                   "#2ecc71"),
+        (k3, "SYNTHETIC",     str(len(fdf[fdf["source"]!="scan"])),                   "#3498db"),
+        (k4, "DEFECT TYPES",  str(fdf["defect_type"].nunique()),                      "#e74c3c"),
+    ]:
+        with col:
+            st.markdown(
+                f'<div style="background:{BG_CARD};border:1px solid {BORDER};'
+                f'border-radius:12px;padding:16px;text-align:center;">'
+                f'<div style="font-family:Space Mono,monospace;font-size:0.7rem;'
+                f'color:{TXT_M};letter-spacing:2px;margin-bottom:6px;">{lbl}</div>'
+                f'<div style="font-size:1.6rem;font-weight:800;color:{color};">{val}</div>'
+                f'</div>',
+                unsafe_allow_html=True
+            )
+
+    # Defect distribution
+    section("DEFECT DISTRIBUTION")
+    defect_counts_all = fdf["defect_type"].value_counts().reset_index()
+    defect_counts_all.columns = ["defect", "count"]
+    COLORS = {
+        "Clean":"#2ecc71","Dusty":"#3498db","Bird-drop":"#f5a623",
+        "Electrical-damage":"#e74c3c","Physical-damage":"#c0392b","Snow-covered":"#9b59b6",
+    }
+    fig_pie = go.Figure(go.Pie(
+        labels=defect_counts_all["defect"],
+        values=defect_counts_all["count"],
+        marker_colors=[COLORS.get(d, "#aaa") for d in defect_counts_all["defect"]],
+        hole=0.45,
+        textinfo="percent+label",
+        textfont=dict(color=TXT, size=11),
+    ))
+    fig_pie.update_layout(
+        height=280, paper_bgcolor=BG_CARD,
+        font=dict(color=TXT_M), showlegend=False,
+        margin=dict(l=10, r=10, t=10, b=10),
+    )
+    st.plotly_chart(fig_pie, use_container_width=True)
+
+    # Paginated raw table
+    section("RAW DATA TABLE")
+    disp_cols = [c for c in ["timestamp","panel_id","defect_type","source","confidence","severity","ac_power_kw"] if c in fdf.columns]
+    display_df = fdf[disp_cols].sort_values("timestamp", ascending=False)
+    rows_per_page = 20
+    total_pages   = max(1, (len(display_df) - 1) // rows_per_page + 1)
+    page = st.number_input(
+        t(f"Page (1–{total_pages})", f"الصفحة"), min_value=1,
+        max_value=total_pages, value=1, step=1, key="ds_page"
+    )
+    start = (page - 1) * rows_per_page
+    st.dataframe(display_df.iloc[start:start + rows_per_page], use_container_width=True, hide_index=True)
+    st.caption(t(
+        f"Rows {start+1}–{min(start+rows_per_page, len(display_df))} of {len(display_df):,}",
+        f"صفوف {start+1}–{min(start+rows_per_page, len(display_df))} من {len(display_df):,}"
+    ))
+
+    # Download filtered
+    csv_bytes = display_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label=t("⬇️ Download Filtered CSV", "⬇️ تحميل البيانات"),
+        data=csv_bytes,
+        file_name=f"solar_dataset_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        key="dl_full"
+    )
     """
     Render the full Dataset & Insights tab.
     All colour variables come from the caller (app.py) so the tab respects
