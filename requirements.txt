@@ -5,7 +5,7 @@ streamlit>=1.35.0
 torch==2.11.0+cpu
 torchvision==0.26.0+cpu
 timm>=0.9.16
-Pillow>=10.0.0
+Pillow==12.1.0
 numpy>=1.26.0
 pandas>=2.2.0
 scikit-learn>=1.4.0
@@ -14,3 +14,4 @@ fpdf2>=2.7.9
 arabic-reshaper>=3.0.0
 python-bidi>=0.4.2
 plotly>=5.20.0
+--upgrade-strategy only-if-needed
