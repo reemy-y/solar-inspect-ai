@@ -1,5 +1,9 @@
 [build]
 builder = "nixpacks"
 
+[build.env]
+PIP_NO_CACHE_DIR = "1"
+
 [deploy]
 startCommand = "streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
+restartPolicyType = "on_failure"
