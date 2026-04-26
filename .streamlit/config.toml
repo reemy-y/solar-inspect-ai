@@ -1,0 +1,25 @@
+# ─────────────────────────────────────────────────────────────────────
+# .streamlit/config.toml
+# Controls app behaviour on Streamlit Community Cloud (and locally)
+# ─────────────────────────────────────────────────────────────────────
+
+[server]
+# Allow all incoming connections (required for cloud deployment)
+headless = true
+enableCORS = false
+enableXsrfProtection = true
+maxUploadSize = 10          # MB — increase if users upload large images
+
+[browser]
+# Prevents the app from trying to open a browser tab on the server
+gatherUsageStats = false
+
+[theme]
+# Base theme — our custom CSS overrides everything, but this sets
+# sensible defaults so the app looks good before CSS loads
+base = "dark"
+primaryColor = "#f5a623"
+backgroundColor = "#1a1f2e"
+secondaryBackgroundColor = "#242938"
+textColor = "#e8edf5"
+font = "sans serif"

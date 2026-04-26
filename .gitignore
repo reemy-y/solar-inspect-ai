@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────────
+# .gitignore — files that must NOT be pushed to GitHub
+# ─────────────────────────────────────────────────────────────────────
+
+# Secrets — NEVER commit this
+.streamlit/secrets.toml
+
+# Login database — resets on cloud deploy anyway
+users.db
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Model weights — use Git LFS or remote download instead
+# (comment these out if your .pth files are under 50 MB)
+# *.pth
+# *.pkl
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
