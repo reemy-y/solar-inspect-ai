@@ -1,11 +1,8 @@
-# ─────────────────────────────────────────────────────────────────────
-# requirements.txt — pin versions so deployment is reproducible
-# ─────────────────────────────────────────────────────────────────────
 --extra-index-url https://download.pytorch.org/whl/cpu
 
 streamlit>=1.35.0
 torch==2.9.1+cpu
-torchvision==0.20.1+cpu
+torchvision==0.26.0+cpu
 timm>=0.9.16
 Pillow>=10.0.0
 numpy>=1.26.0
