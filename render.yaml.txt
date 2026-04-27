@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: solarinspect-ai
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+    envVars:
+      - key: DATABASE_URL
+        sync: false   # you'll paste this manually in Render dashboard
+      - key: ADMIN_PASSWORD
+        sync: false
