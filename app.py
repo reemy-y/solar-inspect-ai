@@ -187,11 +187,10 @@ def auth_login(email: str, password: str):
 # ── Scan persistence helpers
 DATASET_PATH = os.path.join("data", "solar_data.csv")
 
-def _append_scan_to_csv(email: str, pred_class: str, confidence: float, severity: str):
-    """
-    Append a scan to the CSV dataset matching existing columns exactly.
-    Reads the header first so the row always has the right number of fields.
-    """
+def _append_scan_to_csv(email: str, pred_class: str, confidence: float, severity: str,
+                        irradiation: float = None, ambient_temp: float = None,
+                        module_temp: float = None, ac_power: float = None):
+    """Append a scan row to CSV — always matches existing column count."""
     os.makedirs("data", exist_ok=True)
     now = datetime.now()
 
@@ -205,29 +204,28 @@ def _append_scan_to_csv(email: str, pred_class: str, confidence: float, severity
             "confidence","severity","source",
         ]
 
-    # Build row with empty string for every column, then fill what we know
     new_row = {col: "" for col in existing_cols}
     new_row["timestamp"]   = now.strftime("%Y-%m-%d %H:%M")
     new_row["date"]        = now.strftime("%Y-%m-%d")
     new_row["hour"]        = now.hour
     new_row["panel_id"]    = email
     new_row["defect_type"] = pred_class
-    if "confidence"  in new_row: new_row["confidence"]  = round(confidence * 100, 1)
-    if "severity"    in new_row: new_row["severity"]    = severity
-    if "source"      in new_row: new_row["source"]      = "scan"
+    if "confidence"     in new_row: new_row["confidence"]     = round(confidence * 100, 1)
+    if "severity"       in new_row: new_row["severity"]       = severity
+    if "source"         in new_row: new_row["source"]         = "scan"
+    if "irradiation"    in new_row and irradiation  is not None: new_row["irradiation"]    = irradiation
+    if "ambient_temp_c" in new_row and ambient_temp is not None: new_row["ambient_temp_c"] = ambient_temp
+    if "module_temp_c"  in new_row and module_temp  is not None: new_row["module_temp_c"]  = module_temp
+    if "ac_power_kw"    in new_row and ac_power     is not None: new_row["ac_power_kw"]    = ac_power
 
-    # Enforce exact column order before writing
     row_df = pd.DataFrame([new_row])[existing_cols]
     write_header = not os.path.exists(DATASET_PATH)
     row_df.to_csv(DATASET_PATH, mode="a", header=write_header, index=False)
 
-def db_save_scan(email: str, pred_class: str, info: dict, confidence: float):
-    """
-    Save a scan result to:
-      1. SQLite scans table (for history tab)
-      2. data/solar_data.csv (for dataset page)
-    Deduplication prevents the same scan being saved twice within 1 minute.
-    """
+def db_save_scan(email: str, pred_class: str, info: dict, confidence: float,
+                 irradiation: float = None, ambient_temp: float = None,
+                 module_temp: float = None, ac_power: float = None):
+    """Save scan to SQLite + CSV. Sensor readings are optional."""
     conn = _db()
     existing = conn.execute("""
         SELECT id FROM scans
@@ -243,16 +241,12 @@ def db_save_scan(email: str, pred_class: str, info: dict, confidence: float):
         """, (
             email,
             datetime.now().strftime("%Y-%m-%d %H:%M"),
-            pred_class,
-            info["display_en"],
-            info["display_ar"],
-            round(confidence, 4),
-            info["severity"],
-            info["icon"],
+            pred_class, info["display_en"], info["display_ar"],
+            round(confidence, 4), info["severity"], info["icon"],
         ))
         conn.commit()
-        # Also write to CSV dataset so it appears in the Dataset page
-        _append_scan_to_csv(email, pred_class, confidence, info["severity"])
+        _append_scan_to_csv(email, pred_class, confidence, info["severity"],
+                            irradiation, ambient_temp, module_temp, ac_power)
     conn.close()
 
 def db_get_scans(email: str, admin: bool = False) -> list:
@@ -1021,31 +1015,36 @@ with col_logo:
     """, unsafe_allow_html=True)
 
 with col_ctrl:
-    lang_label   = "🌐 AR" if st.session_state.lang == "en" else "🌐 EN"
+    lang_label   = "AR" if st.session_state.lang == "en" else "EN"
     user_initial = st.session_state.auth_email[0].upper() if st.session_state.auth_email else "?"
-    admin_badge  = ' <span style="color:#f5a623;font-size:0.65rem;font-weight:700;">ADMIN</span>' if is_admin else ""
-    short_email  = st.session_state.auth_email[:22] + "…" if len(st.session_state.auth_email) > 22 else st.session_state.auth_email
+    short_email  = st.session_state.auth_email[:20] + "…" if len(st.session_state.auth_email) > 20 else st.session_state.auth_email
+    admin_tag    = " · ADMIN" if is_admin else ""
 
     st.markdown(f"""
-    <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:20px;gap:8px;">
+    <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:18px;gap:6px;">
         <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:8px;
-                    padding:6px 12px;display:flex;align-items:center;gap:8px;font-size:0.8rem;color:{TXT_M};">
-            <span style="background:#f5a623;color:#000;border-radius:50%;width:22px;height:22px;
-                         display:inline-flex;align-items:center;justify-content:center;
-                         font-weight:800;font-size:0.72rem;flex-shrink:0;">{user_initial}</span>
-            <span style="white-space:nowrap;">{short_email}{admin_badge}</span>
+                    padding:5px 10px;display:flex;align-items:center;gap:7px;
+                    font-size:0.78rem;color:{TXT_M};white-space:nowrap;">
+            <span style="background:#f5a623;color:#000;border-radius:50%;
+                         width:20px;height:20px;display:inline-flex;align-items:center;
+                         justify-content:center;font-weight:800;font-size:0.68rem;flex-shrink:0;">{user_initial}</span>
+            <span>{short_email}<span style="color:#f5a623;font-weight:700;">{admin_tag}</span></span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Three compact buttons in one row
-    b1, b2 = st.columns([1, 1])
+    # All 3 buttons in one row — equal width, compact
+    b1, b2, b3 = st.columns(3)
     with b1:
-        if st.button(lang_label, use_container_width=True, key="btn_lang"):
+        if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
             st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
             st.rerun()
     with b2:
-        if st.button("🚪 Logout", use_container_width=True, key="btn_logout"):
+        st.markdown('<div style="display:none"></div>', unsafe_allow_html=True)
+        # placeholder — kept for spacing symmetry
+        st.markdown(f'<div style="height:38px;background:{BG_CARD};border:1px solid {BORDER};border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:0.8rem;color:{TXT_M};">👤</div>', unsafe_allow_html=True)
+    with b3:
+        if st.button("🚪 Out", use_container_width=True, key="btn_logout"):
             if st.session_state.session_token:
                 _delete_token(st.session_state.session_token)
             st.session_state.logged_in     = False
@@ -1108,15 +1107,27 @@ with tab1:
         display    = info["display_ar"] if IS_AR else info["display_en"]
         sev        = info["severity"]
 
-        # ── Save scan ONCE per upload using file hash as guard.
-        # Streamlit reruns the whole script on every click, so we track
-        # which files have already been saved using session_state.
+        # ── Optional sensor readings — user can fill these to enrich the dataset
+        st.markdown(f'<div class="section-title">{t("OPTIONAL: ADD SENSOR READINGS TO DATASET","بيانات المستشعر (اختياري)")}</div>', unsafe_allow_html=True)
+        sc1, sc2, sc3, sc4 = st.columns(4)
+        with sc1: s_irr = st.number_input(t("Irradiation","الإشعاع"),     min_value=0.0, max_value=2.0,   value=0.0, step=0.01, key="s_irr", format="%.2f")
+        with sc2: s_amb = st.number_input(t("Ambient °C","حرارة المحيط"), min_value=-10.0,max_value=60.0, value=0.0, step=0.1,  key="s_amb", format="%.1f")
+        with sc3: s_mod = st.number_input(t("Module °C","حرارة اللوح"),   min_value=-10.0,max_value=90.0, value=0.0, step=0.1,  key="s_mod", format="%.1f")
+        with sc4: s_ac  = st.number_input(t("AC Power (kW)","طاقة AC"),   min_value=0.0, max_value=500.0, value=0.0, step=0.1,  key="s_ac",  format="%.2f")
+
+        # ── Save scan ONCE per upload using file hash as guard
         import hashlib as _hl
         file_hash = _hl.md5(uploaded.getvalue()).hexdigest()
         if "saved_hashes" not in st.session_state:
             st.session_state.saved_hashes = set()
         if file_hash not in st.session_state.saved_hashes:
-            db_save_scan(st.session_state.auth_email, pred_class, info, confidence)
+            db_save_scan(
+                st.session_state.auth_email, pred_class, info, confidence,
+                irradiation  = s_irr  if s_irr  > 0 else None,
+                ambient_temp = s_amb  if s_amb  > 0 else None,
+                module_temp  = s_mod  if s_mod  > 0 else None,
+                ac_power     = s_ac   if s_ac   > 0 else None,
+            )
             st.session_state.saved_hashes.add(file_hash)
 
         col_img, col_res = st.columns([3, 2], gap="large")
