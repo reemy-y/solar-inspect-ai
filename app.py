@@ -291,6 +291,30 @@ def db_delete_scans(email: str):
     conn.commit()
     conn.close()
 
+def _ensure_admin():
+    """
+    Auto-create the admin account on every app startup.
+    This means the admin NEVER needs to manually register —
+    even after a fresh redeploy the account exists immediately.
+    Password is read from environment variable ADMIN_PASSWORD
+    (set this in Railway Variables) — defaults to a safe value.
+    """
+    admin_pw = os.environ.get("ADMIN_PASSWORD", "SolarAdmin2026!")
+    conn = _db()
+    existing = conn.execute(
+        "SELECT id FROM users WHERE email = ?", (ADMIN_EMAIL,)
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO users (email, pw_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            (ADMIN_EMAIL, _hash(admin_pw), "admin", datetime.now().isoformat()),
+        )
+        conn.commit()
+    conn.close()
+
+# Run on every startup — safe to call repeatedly (checks before inserting)
+_ensure_admin()
+
 def db_get_all_users() -> list:
     """Admin only: get list of all registered users."""
     conn = _db()
@@ -344,7 +368,7 @@ def render_auth_page():
         submitted2 = False
 
         with tab_login:
-            with st.form("login_form", enter_to_submit=True):
+            with st.form("login_form", enter_to_submit=False):
                 email    = st.text_input("Email", placeholder="you@example.com")
                 password = st.text_input("Password", type="password")
                 submitted = st.form_submit_button("Log In", use_container_width=True)
@@ -361,7 +385,7 @@ def render_auth_page():
                     st.error(msg)
 
         with tab_signup:
-            with st.form("signup_form", enter_to_submit=True):
+            with st.form("signup_form", enter_to_submit=False):
                 new_email = st.text_input("Email", placeholder="you@example.com", key="su_email")
                 new_pw    = st.text_input("Password (min 6 chars)", type="password", key="su_pw")
                 new_pw2   = st.text_input("Confirm password",        type="password", key="su_pw2")
@@ -997,34 +1021,31 @@ with col_logo:
     """, unsafe_allow_html=True)
 
 with col_ctrl:
-    # FIX 5: Use a single HTML block for perfectly aligned controls
     lang_label   = "🌐 AR" if st.session_state.lang == "en" else "🌐 EN"
     user_initial = st.session_state.auth_email[0].upper() if st.session_state.auth_email else "?"
-    admin_badge  = ' <span style="color:#f5a623;font-size:0.7rem;">ADMIN</span>' if is_admin else ""
+    admin_badge  = ' <span style="color:#f5a623;font-size:0.65rem;font-weight:700;">ADMIN</span>' if is_admin else ""
+    short_email  = st.session_state.auth_email[:22] + "…" if len(st.session_state.auth_email) > 22 else st.session_state.auth_email
 
     st.markdown(f"""
-    <div style="display:flex;flex-direction:column;align-items:flex-end;
-                gap:10px;padding-top:16px;">
-        <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;
-                    padding:8px 14px;display:flex;align-items:center;gap:10px;
-                    font-size:0.85rem;color:{TXT_M};white-space:nowrap;">
-            <span style="background:#f5a623;color:#000;border-radius:50%;
-                         width:26px;height:26px;display:inline-flex;
-                         align-items:center;justify-content:center;
-                         font-weight:800;font-size:0.8rem;">{user_initial}</span>
-            <span>{st.session_state.auth_email}{admin_badge}</span>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:20px;gap:8px;">
+        <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:8px;
+                    padding:6px 12px;display:flex;align-items:center;gap:8px;font-size:0.8rem;color:{TXT_M};">
+            <span style="background:#f5a623;color:#000;border-radius:50%;width:22px;height:22px;
+                         display:inline-flex;align-items:center;justify-content:center;
+                         font-weight:800;font-size:0.72rem;flex-shrink:0;">{user_initial}</span>
+            <span style="white-space:nowrap;">{short_email}{admin_badge}</span>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Buttons in a clean equal-width row
-    b1, b2 = st.columns(2)
+    # Three compact buttons in one row
+    b1, b2 = st.columns([1, 1])
     with b1:
-        if st.button(lang_label, use_container_width=True):
+        if st.button(lang_label, use_container_width=True, key="btn_lang"):
             st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
             st.rerun()
     with b2:
-        if st.button("🚪 Logout", use_container_width=True):
+        if st.button("🚪 Logout", use_container_width=True, key="btn_logout"):
             if st.session_state.session_token:
                 _delete_token(st.session_state.session_token)
             st.session_state.logged_in     = False
@@ -1414,14 +1435,6 @@ with tab3:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                if lstm_model is None:
-                    st.info(t(
-                        "Showing physics-based simulation. To use the real LSTM model, "
-                        "place these files in your app root folder: "
-                        "lstm_model.keras, lstm_scaler.pkl, lstm_metadata.json, sample_data.csv",
-                        "يتم عرض محاكاة فيزيائية. لاستخدام نموذج LSTM الحقيقي، ضع الملفات في مجلد التطبيق."
-                    ))
-
                 avg_power    = np.mean(forecasts)
                 max_power    = np.max(forecasts)
                 total_energy = sum(forecasts) * 0.25 / 1000
@@ -1505,29 +1518,23 @@ with tab4:
             disp_h    = h.get("display_ar","") if IS_AR else h.get("display_en","")
             sev       = h.get("severity","info")
             sev_color = {"critical":"#e74c3c","warning":"#f5a623","info":"#2ecc71"}.get(sev,"#aaa")
-            user_tag  = f'<span style="color:{TXT_M};font-size:0.75rem;">👤 {h["email"]}</span><br>' if is_admin else ""
             conf      = h.get("confidence", 0)
             icon      = h.get("icon","🔍")
             timestamp = h.get("time","")
-            st.markdown(f"""
-            <div class="history-card">
-                <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
-                    <div>
-                        <span style="font-size:1.2rem;">{icon}</span>
-                        <span style="font-weight:700;margin-left:8px;color:{TXT};">{disp_h}</span>
-                        <span style="margin-left:10px;color:{TXT_M};font-size:0.82rem;">
-                            {conf:.0%} {t('confidence','ثقة')}
-                        </span>
-                    </div>
-                    <div style="text-align:right;flex-shrink:0;">
-                        {user_tag}
-                        <span style="color:{sev_color};font-size:0.8rem;font-weight:700;">
-                            {sev.upper()}
-                        </span><br>
-                        <span style="color:{TXT_M};font-size:0.75rem;">{timestamp}</span>
-                    </div>
-                </div>
-            </div>""", unsafe_allow_html=True)
+            user_line = f"👤 {h['email']} · " if is_admin else ""
+            st.markdown(
+                f'<div class="history-card">'
+                f'<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">'
+                f'<div><span style="font-size:1.1rem;">{icon}</span>'
+                f'<span style="font-weight:700;margin-left:8px;color:{TXT};">{disp_h}</span>'
+                f'<span style="margin-left:10px;color:{TXT_M};font-size:0.8rem;">{conf:.0%} {t("confidence","ثقة")}</span></div>'
+                f'<div style="text-align:right;flex-shrink:0;">'
+                f'<span style="color:{TXT_M};font-size:0.73rem;">{user_line}</span>'
+                f'<span style="color:{sev_color};font-size:0.8rem;font-weight:700;">{sev.upper()}</span>'
+                f'<span style="color:{TXT_M};font-size:0.73rem;"> · {timestamp}</span>'
+                f'</div></div></div>',
+                unsafe_allow_html=True
+            )
 
         # Clear button
         btn_label = t("🗑 Clear My History","🗑 مسح سجلي")
