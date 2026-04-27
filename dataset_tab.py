@@ -80,25 +80,18 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
     real_scans = df[df["source"] == "scan"].copy()
     synthetic  = df[df["source"] != "scan"].copy()
 
-    # ── REAL SCANS SUMMARY — shown first, most important
-    section("REAL SCANS FROM USERS")
-
-    if real_scans.empty:
-        st.markdown(
-            f'<div style="color:{TXT_M};font-size:0.9rem;padding:12px 0;">'
-            f'No real scans yet — scans will appear here automatically.</div>',
-            unsafe_allow_html=True
-        )
-    else:
-        total_scans  = len(real_scans)
-        unique_users = real_scans["panel_id"].nunique()
+    # ── REAL SCANS SUMMARY — only shown when real data exists (FIX 6)
+    if not real_scans.empty:
+        section("REAL SCANS FROM USERS")
+        total_scans   = len(real_scans)
+        unique_users  = real_scans["panel_id"].nunique()
         defect_counts = real_scans["defect_type"].value_counts()
 
         k1, k2, k3 = st.columns(3)
         for col, lbl, val, color in [
-            (k1, "TOTAL SCANS",   str(total_scans),  "#f5a623"),
-            (k2, "UNIQUE USERS",  str(unique_users),  "#2ecc71"),
-            (k3, "MOST COMMON",   defect_counts.index[0] if not defect_counts.empty else "—", "#3498db"),
+            (k1, "TOTAL SCANS",  str(total_scans),  "#f5a623"),
+            (k2, "UNIQUE USERS", str(unique_users),  "#2ecc71"),
+            (k3, "MOST COMMON",  defect_counts.index[0] if not defect_counts.empty else "—", "#3498db"),
         ]:
             with col:
                 st.markdown(
@@ -111,7 +104,6 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
                     unsafe_allow_html=True
                 )
 
-        # ── Defect breakdown from real scans
         st.markdown("<br>", unsafe_allow_html=True)
         fig_bar = go.Figure(go.Bar(
             x=defect_counts.index.tolist(),
@@ -131,22 +123,18 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         )
         st.plotly_chart(fig_bar, use_container_width=True, key="dst_fig_bar")
 
-        # ── Real scans table
         section("REAL SCAN RECORDS")
-        show_cols = ["timestamp", "panel_id", "defect_type", "confidence", "severity"]
-        available = [c for c in show_cols if c in real_scans.columns]
-        real_display = real_scans[available].rename(columns={"panel_id": "user_email"})
+        show_cols    = [c for c in ["timestamp","panel_id","defect_type","confidence","severity"] if c in real_scans.columns]
+        real_display = real_scans[show_cols].rename(columns={"panel_id":"user_email"})
         real_display = real_display.sort_values("timestamp", ascending=False)
         st.dataframe(real_display, use_container_width=True, hide_index=True)
 
-        # ── Download real scans
         csv_real = real_display.to_csv(index=False).encode("utf-8")
         st.download_button(
-            label=t("⬇️ Download Real Scans CSV", "⬇️ تحميل بيانات الفحوصات"),
+            label=t("⬇️ Download Real Scans CSV","⬇️ تحميل بيانات الفحوصات"),
             data=csv_real,
             file_name=f"real_scans_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            key="dl_real"
+            mime="text/csv", key="dl_real"
         )
 
     # ── SYNTHETIC / FULL DATASET section

@@ -23,7 +23,10 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────
 import secrets as _secrets
 
-DB_PATH    = "users.db"
+DB_PATH    = os.environ.get("DB_PATH", "users.db")
+# FIX 4: On Railway, set DB_PATH env variable to a persistent volume path
+# e.g. DB_PATH=/data/users.db  with a Railway volume mounted at /data
+# This ensures users survive redeploys. Locally it defaults to users.db
 ADMIN_EMAIL = "reemya185@gmail.com"   # ← only this email gets admin access
 
 # ── Session token cookie name
@@ -630,25 +633,43 @@ def load_effnet():
 
 @st.cache_resource
 def load_perf_model():
+    """Load performance model files with clear error reporting."""
+    files = {
+        "performance_model.pkl":   "performance_model",
+        "performance_scaler.pkl":  "performance_scaler",
+        "model_metadata.json":     "model_metadata",
+        "typical_values.json":     "typical_values",
+    }
+    missing = [f for f in files if not os.path.exists(f)]
+    if missing:
+        return None, None, None, None
     try:
         model  = joblib.load("performance_model.pkl")
         scaler = joblib.load("performance_scaler.pkl")
         with open("model_metadata.json") as f:  meta    = json.load(f)
         with open("typical_values.json")  as f: typical = json.load(f)
         return model, scaler, meta, typical
-    except:
+    except Exception as e:
         return None, None, None, None
 
 @st.cache_resource
 def load_lstm():
+    """Load LSTM model files with clear error reporting."""
+    required = ["lstm_model.keras", "lstm_scaler.pkl", "lstm_metadata.json", "sample_data.csv"]
+    missing  = [f for f in required if not os.path.exists(f)]
+    if missing:
+        return None, None, None, None
     try:
         import tensorflow as tf
         model  = tf.keras.models.load_model("lstm_model.keras")
         scaler = joblib.load("lstm_scaler.pkl")
         with open("lstm_metadata.json") as f: meta = json.load(f)
         sample = pd.read_csv("sample_data.csv")
+        # Validate metadata has required keys
+        assert "seq_len"  in meta, "lstm_metadata.json missing 'seq_len'"
+        assert "features" in meta, "lstm_metadata.json missing 'features'"
         return model, scaler, meta, sample
-    except:
+    except Exception as e:
         return None, None, None, None
 
 effnet_model                                     = load_effnet()
@@ -959,6 +980,9 @@ def generate_pdf(pred_class: str, confidence: float, info: dict,
 # 6. UI — header, controls, tabs
 # ─────────────────────────────────────────────────────────────────────
 
+# ── Role check must happen before header renders (used in badge)
+is_admin = _get_role(st.session_state.auth_email) == "admin"
+
 # ── Top header
 col_logo, col_ctrl = st.columns([5, 2])
 with col_logo:
@@ -973,20 +997,34 @@ with col_logo:
     """, unsafe_allow_html=True)
 
 with col_ctrl:
-    st.markdown("<br>", unsafe_allow_html=True)
-    # Show logged-in user
-    st.markdown(
-        f'<div class="user-badge">👤 {st.session_state.auth_email}</div>',
-        unsafe_allow_html=True,
-    )
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("🌐 AR" if st.session_state.lang == "en" else "🌐 EN"):
+    # FIX 5: Use a single HTML block for perfectly aligned controls
+    lang_label   = "🌐 AR" if st.session_state.lang == "en" else "🌐 EN"
+    user_initial = st.session_state.auth_email[0].upper() if st.session_state.auth_email else "?"
+    admin_badge  = ' <span style="color:#f5a623;font-size:0.7rem;">ADMIN</span>' if is_admin else ""
+
+    st.markdown(f"""
+    <div style="display:flex;flex-direction:column;align-items:flex-end;
+                gap:10px;padding-top:16px;">
+        <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;
+                    padding:8px 14px;display:flex;align-items:center;gap:10px;
+                    font-size:0.85rem;color:{TXT_M};white-space:nowrap;">
+            <span style="background:#f5a623;color:#000;border-radius:50%;
+                         width:26px;height:26px;display:inline-flex;
+                         align-items:center;justify-content:center;
+                         font-weight:800;font-size:0.8rem;">{user_initial}</span>
+            <span>{st.session_state.auth_email}{admin_badge}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Buttons in a clean equal-width row
+    b1, b2 = st.columns(2)
+    with b1:
+        if st.button(lang_label, use_container_width=True):
             st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
             st.rerun()
-    with c2:
-        # Logout — delete token so session doesn't persist after explicit logout
-        if st.button("🚪"):
+    with b2:
+        if st.button("🚪 Logout", use_container_width=True):
             if st.session_state.session_token:
                 _delete_token(st.session_state.session_token)
             st.session_state.logged_in     = False
@@ -994,9 +1032,6 @@ with col_ctrl:
             st.session_state.session_token = ""
             st.session_state.history       = []
             st.rerun()
-
-# ── Role check — admin gets extra tab
-is_admin = _get_role(st.session_state.auth_email) == "admin"
 
 # ── Tabs — Dataset tab only shown to admin
 if is_admin:
@@ -1317,23 +1352,44 @@ with tab3:
                     st.error(f"Forecast error: {e}")
                     forecasts, hours, model_label = [], [], ""
             else:
-                # ── FIX 4: Simulation fallback when LSTM files not present
-                # Uses a physics-based solar power estimate so the page is
-                # always functional. Place lstm_model.keras, lstm_scaler.pkl,
-                # lstm_metadata.json, sample_data.csv in the app root folder
-                # to enable the real ML forecast.
+                # ── FIX 1: Improved physics-based simulation
+                # Uses a realistic solar irradiance model with temperature
+                # correction factor (standard -0.4%/°C above 25°C for Si cells)
                 forecasts, hours = [], []
-                base_power = f_irr * 3200 * (1 - (f_mod - 25) * 0.004)
-                base_power = max(0, base_power)
+                PANEL_CAPACITY_KW = 3.5   # typical residential panel array
+                INVERTER_EFF      = 0.96
+                TEMP_COEFF        = -0.004  # power loss per °C above 25°C
+
                 start_hour = datetime.now().hour
+                start_min  = datetime.now().minute
+
                 for step in range(steps * 4):
-                    hour_of_day = (start_hour + step // 4) % 24
-                    # Solar curve — peaks at midday
-                    solar_factor = max(0, np.sin((hour_of_day - 6) / 14 * np.pi)) if 6 <= hour_of_day <= 20 else 0
-                    noise = np.random.normal(0, base_power * 0.03)
-                    ac_pred = max(0, base_power * solar_factor + noise) / 1000
-                    forecasts.append(ac_pred)
-                    hours.append(f"{hour_of_day:02d}:{(step%4)*15:02d}")
+                    total_minutes = start_min + step * 15
+                    hour_of_day   = (start_hour + total_minutes // 60) % 24
+                    minute_of_hour = total_minutes % 60
+
+                    # Solar curve: smooth sine between 6am-7pm
+                    if 6 <= hour_of_day <= 19:
+                        solar_angle  = (hour_of_day - 6 + minute_of_hour / 60) / 13 * np.pi
+                        solar_factor = max(0, np.sin(solar_angle))
+                    else:
+                        solar_factor = 0.0
+
+                    # Temperature correction
+                    temp_factor = 1 + TEMP_COEFF * max(0, f_mod - 25)
+
+                    # AC power estimate
+                    dc_power = f_irr * PANEL_CAPACITY_KW * solar_factor * temp_factor
+                    ac_power = max(0, dc_power * INVERTER_EFF)
+
+                    # Small realistic noise (±2%)
+                    noise    = np.random.normal(0, ac_power * 0.02)
+                    ac_power = max(0, ac_power + noise)
+
+                    forecasts.append(round(ac_power, 3))
+                    h_label = (start_hour + total_minutes // 60) % 24
+                    hours.append(f"{h_label:02d}:{minute_of_hour:02d}")
+
                 model_label = t("Physics Simulation (LSTM files not found)", "محاكاة فيزيائية")
 
             if forecasts:
@@ -1385,42 +1441,45 @@ with tab3:
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 4 — HISTORY
-# Normal users: own scans only. Admin: all users' scans.
-# Data loaded from SQLite — persists across sessions/redeploys.
+# FIX 3: Load from DB safely, users see only their own scans.
 # ═══════════════════════════════════════════════════════════════
 with tab4:
     st.markdown(f'<div class="section-title">{t("SCAN HISTORY","سجل الفحص")}</div>',
                 unsafe_allow_html=True)
 
-    # ── Load from database (admin sees all, users see own)
-    user_history = db_get_scans(st.session_state.auth_email, admin=is_admin)
+    # ── Safe DB load with error handling
+    try:
+        user_history = db_get_scans(st.session_state.auth_email, admin=is_admin)
+    except Exception as e:
+        st.error(t(f"Could not load history: {e}", f"خطأ في تحميل السجل: {e}"))
+        user_history = []
 
-    # Admin: show user filter + total user count
+    # Admin: user filter dropdown
     if is_admin and user_history:
-        all_users_in_scans = sorted(set(h["email"] for h in user_history))
+        all_emails = sorted(set(h["email"] for h in user_history))
         selected_user = st.selectbox(
-            t("Filter by user (admin view)", "تصفية حسب المستخدم"),
-            ["All Users"] + all_users_in_scans,
+            t("Filter by user", "تصفية حسب المستخدم"),
+            ["All Users"] + all_emails,
             key="hist_filter"
         )
         if selected_user != "All Users":
             user_history = [h for h in user_history if h["email"] == selected_user]
         st.markdown(
             f'<div style="font-size:0.82rem;color:{TXT_M};margin-bottom:12px;">'
-            f'👑 Admin view — showing {len(user_history)} scans'
-            f'{"" if selected_user == "All Users" else f" for {selected_user}"}'
-            f'</div>',
-            unsafe_allow_html=True
+            f'👑 Admin view — {len(user_history)} scans'
+            f'</div>', unsafe_allow_html=True
         )
 
     if not user_history:
         st.markdown(f"""
         <div style="text-align:center;color:{TXT_M};padding:40px;">
-            <div style="font-size:2rem;margin-bottom:12px;">📋</div>
-            <div>{t('No scans yet — upload an image to get started',
-                     'لا توجد عمليات فحص بعد — ارفع صورة للبدء')}</div>
+            <div style="font-size:2.5rem;margin-bottom:12px;">📋</div>
+            <div style="font-size:1rem;">{t(
+                'No scans yet — upload an image in the Image Scan tab to get started.',
+                'لا توجد فحوصات بعد — ارفع صورة في تبويب الفحص للبدء.')}</div>
         </div>""", unsafe_allow_html=True)
     else:
+        # KPI summary
         total    = len(user_history)
         critical = sum(1 for h in user_history if h["severity"] == "critical")
         warning  = sum(1 for h in user_history if h["severity"] == "warning")
@@ -1428,10 +1487,10 @@ with tab4:
 
         s1, s2, s3, s4 = st.columns(4)
         for col, le, la, val, color in [
-            (s1,"TOTAL SCANS","إجمالي الفحوصات",total,"#f5a623"),
-            (s2,"CRITICAL","حرج",critical,"#e74c3c"),
-            (s3,"WARNINGS","تحذيرات",warning,"#f5a623"),
-            (s4,"GOOD","جيد",good,"#2ecc71"),
+            (s1,"TOTAL","الإجمالي",    total,    "#f5a623"),
+            (s2,"CRITICAL","حرج",      critical, "#e74c3c"),
+            (s3,"WARNINGS","تحذيرات",  warning,  "#f5a623"),
+            (s4,"GOOD","جيد",          good,     "#2ecc71"),
         ]:
             with col:
                 st.markdown(f"""<div class="metric-card" style="text-align:center;">
@@ -1443,36 +1502,41 @@ with tab4:
                     unsafe_allow_html=True)
 
         for h in user_history:
-            disp_h    = h["display_ar"] if IS_AR else h["display_en"]
-            sev_color = {"critical":"#e74c3c","warning":"#f5a623","info":"#2ecc71"}[h["severity"]]
-            # Admin: show which user this scan belongs to
-            user_tag  = f'<span style="color:{TXT_M};font-size:0.78rem;">👤 {h["email"]}</span><br>' if is_admin else ""
+            disp_h    = h.get("display_ar","") if IS_AR else h.get("display_en","")
+            sev       = h.get("severity","info")
+            sev_color = {"critical":"#e74c3c","warning":"#f5a623","info":"#2ecc71"}.get(sev,"#aaa")
+            user_tag  = f'<span style="color:{TXT_M};font-size:0.75rem;">👤 {h["email"]}</span><br>' if is_admin else ""
+            conf      = h.get("confidence", 0)
+            icon      = h.get("icon","🔍")
+            timestamp = h.get("time","")
             st.markdown(f"""
             <div class="history-card">
-                <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
                     <div>
-                        <span style="font-size:1.2rem;">{h['icon']}</span>
+                        <span style="font-size:1.2rem;">{icon}</span>
                         <span style="font-weight:700;margin-left:8px;color:{TXT};">{disp_h}</span>
-                        <span style="margin-left:12px;color:{TXT_M};font-size:0.82rem;">
-                            {h['confidence']:.0%} {t('confidence','ثقة')}
+                        <span style="margin-left:10px;color:{TXT_M};font-size:0.82rem;">
+                            {conf:.0%} {t('confidence','ثقة')}
                         </span>
                     </div>
-                    <div style="text-align:right;">
+                    <div style="text-align:right;flex-shrink:0;">
                         {user_tag}
-                        <span style="color:{sev_color};font-size:0.82rem;font-weight:700;">
-                            {h['severity'].upper()}
+                        <span style="color:{sev_color};font-size:0.8rem;font-weight:700;">
+                            {sev.upper()}
                         </span><br>
-                        <span style="color:{TXT_M};font-size:0.78rem;">{h['time']}</span>
+                        <span style="color:{TXT_M};font-size:0.75rem;">{timestamp}</span>
                     </div>
                 </div>
             </div>""", unsafe_allow_html=True)
 
-        # Clear button — admin clears selected user, normal user clears own
-        clear_label = t("🗑 Clear My History", "🗑 مسح سجلي")
-        if is_admin and "selected_user" in dir() and selected_user != "All Users":
-            clear_label = f"🗑 Clear {selected_user}'s History"
-        if st.button(clear_label):
-            target = selected_user if (is_admin and selected_user != "All Users") else st.session_state.auth_email
+        # Clear button
+        btn_label = t("🗑 Clear My History","🗑 مسح سجلي")
+        if is_admin and "selected_user" in st.session_state and st.session_state.get("hist_filter","All Users") != "All Users":
+            btn_label = f"🗑 Clear {st.session_state.hist_filter}'s History"
+        if st.button(btn_label, key="clear_hist"):
+            target = st.session_state.get("hist_filter", st.session_state.auth_email)
+            if not is_admin or target == "All Users":
+                target = st.session_state.auth_email
             db_delete_scans(target)
             st.rerun()
 
