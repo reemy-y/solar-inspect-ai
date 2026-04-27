@@ -4,11 +4,11 @@
 # ─────────────────────────────────────────────────────────────────────
 import streamlit as st
 import torch, timm, numpy as np, os, re, json, joblib, pandas as pd
-import unicodedata as _ud, sqlite3, hashlib
+import unicodedata as _ud, hashlib, psycopg2, psycopg2.extras
 from PIL import Image
 from datetime import datetime
 from fpdf import FPDF
-from dataset_tab import render_dataset_tab 
+from dataset_tab import render_dataset_tab
 
 st.set_page_config(
     page_title="SolarInspect AI",
@@ -19,92 +19,66 @@ st.set_page_config(
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 2. AUTH & DATABASE — persistent sessions + role-based access
+# 2. AUTH & DATABASE — PostgreSQL (Supabase) + persistent sessions
 # ─────────────────────────────────────────────────────────────────────
 import secrets as _secrets
 
-DB_PATH    = os.environ.get("DB_PATH", "users.db")
-# FIX 4: On Railway, set DB_PATH env variable to a persistent volume path
-# e.g. DB_PATH=/data/users.db  with a Railway volume mounted at /data
-# This ensures users survive redeploys. Locally it defaults to users.db
-ADMIN_EMAIL = "reemya185@gmail.com"   # ← only this email gets admin access
+DATABASE_URL = os.environ.get("DATABASE_URL")   # set on Render
+ADMIN_EMAIL  = "reemya185@gmail.com"
+TOKEN_KEY    = "solar_session_token"
 
-# ── Session token cookie name
-TOKEN_KEY  = "solar_session_token"
+# ── Supabase Storage config (for CSV persistence)
+SUPABASE_URL    = os.environ.get("SUPABASE_URL", "")        # e.g. https://xxxx.supabase.co
+SUPABASE_KEY    = os.environ.get("SUPABASE_SERVICE_KEY", "") # service role key (has storage write)
+STORAGE_BUCKET  = "solar-data"
+STORAGE_CSV_KEY = "solar_data.csv"
+
+CSV_COLUMNS = [
+    "timestamp", "date", "hour", "panel_id",
+    "irradiation", "ambient_temp_c", "module_temp_c",
+    "dc_power_kw", "ac_power_kw", "defect_type", "efficiency_pct",
+    "confidence", "severity", "source",
+]
+
 
 def _db():
     """
-    Connect to SQLite and ensure all tables exist.
-
-    Schema:
-      users  — stores accounts (email, hashed password, role, created_at)
-      scans  — stores every scan result (linked to user by email)
-      tokens — stores persistent session tokens (login stays alive)
+    Open a new psycopg2 connection to Supabase PostgreSQL.
+    Always close the connection after use.
+    Tables are expected to already exist in Supabase (created via SQL Editor).
     """
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL")   # safer for concurrent access
-
-    # Users table — role is either "admin" or "user"
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            email      TEXT    UNIQUE NOT NULL,
-            pw_hash    TEXT    NOT NULL,
-            role       TEXT    NOT NULL DEFAULT 'user',
-            created_at TEXT    NOT NULL
-        )
-    """)
-
-    # Scans table — every scan result saved here permanently
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS scans (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            email       TEXT    NOT NULL,
-            scanned_at  TEXT    NOT NULL,
-            defect_type TEXT    NOT NULL,
-            display_en  TEXT    NOT NULL,
-            display_ar  TEXT    NOT NULL,
-            confidence  REAL    NOT NULL,
-            severity    TEXT    NOT NULL,
-            icon        TEXT    NOT NULL,
-            pdf_saved   INTEGER DEFAULT 0
-        )
-    """)
-
-    # Tokens table — persistent login across browser sessions
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS tokens (
-            token      TEXT PRIMARY KEY,
-            email      TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL
-        )
-    """)
-
-    conn.commit()
+    if not DATABASE_URL:
+        st.error("DATABASE_URL environment variable is not set. Please configure it on Render.")
+        st.stop()
+    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
     return conn
+
 
 def _hash(password: str) -> str:
     """SHA-256 password hash."""
     return hashlib.sha256(password.encode()).hexdigest()
 
+
 # ── Token helpers
 def _create_token(email: str) -> str:
     """Create a 30-day session token and save it to DB."""
     from datetime import timedelta
-    token      = _secrets.token_hex(32)
-    now        = datetime.now()
-    expires    = now + timedelta(days=30)
+    token   = _secrets.token_hex(32)
+    now     = datetime.now()
+    expires = now + timedelta(days=30)
     conn = _db()
-    # Remove old tokens for this user first
-    conn.execute("DELETE FROM tokens WHERE email = ?", (email,))
-    conn.execute(
-        "INSERT INTO tokens (token, email, created_at, expires_at) VALUES (?, ?, ?, ?)",
-        (token, email, now.isoformat(), expires.isoformat()),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM tokens WHERE email = %s", (email,))
+            cur.execute(
+                "INSERT INTO tokens (token, email, created_at, expires_at) VALUES (%s, %s, %s, %s)",
+                (token, email, now, expires),
+            )
+        conn.commit()
+    finally:
+        conn.close()
     return token
+
 
 def _validate_token(token: str):
     """
@@ -114,28 +88,35 @@ def _validate_token(token: str):
     if not token:
         return None
     conn = _db()
-    row = conn.execute(
-        "SELECT email, expires_at FROM tokens WHERE token = ?", (token,)
-    ).fetchone()
-    conn.close()
-    if row is None:
-        return None
-    email, expires_at = row
-    if datetime.now() > datetime.fromisoformat(expires_at):
-        # Token expired — clean it up
-        conn = _db()
-        conn.execute("DELETE FROM tokens WHERE token = ?", (token,))
-        conn.commit()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT email, expires_at FROM tokens WHERE token = %s", (token,)
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        email, expires_at = row
+        if datetime.now() > expires_at.replace(tzinfo=None):
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM tokens WHERE token = %s", (token,))
+            conn.commit()
+            return None
+        return email
+    finally:
         conn.close()
-        return None
-    return email
+
 
 def _delete_token(token: str):
     """Delete a token on logout."""
     conn = _db()
-    conn.execute("DELETE FROM tokens WHERE token = ?", (token,))
-    conn.commit()
-    conn.close()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM tokens WHERE token = %s", (token,))
+        conn.commit()
+    finally:
+        conn.close()
+
 
 # ── User helpers
 def _get_role(email: str) -> str:
@@ -143,9 +124,14 @@ def _get_role(email: str) -> str:
     if email.lower() == ADMIN_EMAIL.lower():
         return "admin"
     conn = _db()
-    row = conn.execute("SELECT role FROM users WHERE email = ?", (email,)).fetchone()
-    conn.close()
-    return row[0] if row else "user"
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT role FROM users WHERE email = %s", (email,))
+            row = cur.fetchone()
+        return row[0] if row else "user"
+    finally:
+        conn.close()
+
 
 def auth_signup(email: str, password: str):
     """Register a new user. Returns (success, message)."""
@@ -154,29 +140,36 @@ def auth_signup(email: str, password: str):
     if len(password) < 6:
         return False, "Password must be at least 6 characters."
     role = "admin" if email.lower() == ADMIN_EMAIL.lower() else "user"
+    conn = _db()
     try:
-        conn = _db()
-        conn.execute(
-            "INSERT INTO users (email, pw_hash, role, created_at) VALUES (?, ?, ?, ?)",
-            (email.lower().strip(), _hash(password), role, datetime.now().isoformat()),
-        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO users (email, pw_hash, role, created_at) VALUES (%s, %s, %s, %s)",
+                (email.lower().strip(), _hash(password), role, datetime.now()),
+            )
         conn.commit()
-        conn.close()
         return True, "Account created! You can now log in."
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         return False, "An account with this email already exists."
+    finally:
+        conn.close()
+
 
 def auth_login(email: str, password: str):
     """
     Verify credentials.
     Returns (success, message, token_or_None).
-    On success, a 30-day session token is created and returned.
     """
     conn = _db()
-    row = conn.execute(
-        "SELECT pw_hash FROM users WHERE email = ?", (email.lower().strip(),)
-    ).fetchone()
-    conn.close()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT pw_hash FROM users WHERE email = %s", (email.lower().strip(),)
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
     if row is None:
         return False, "No account found with this email.", None
     if row[0] != _hash(password):
@@ -184,152 +177,219 @@ def auth_login(email: str, password: str):
     token = _create_token(email.lower().strip())
     return True, "Logged in successfully.", token
 
-# ── Scan persistence helpers
-DATASET_PATH = os.path.join("data", "solar_data.csv")
 
-def _append_scan_to_csv(email: str, pred_class: str, confidence: float, severity: str,
-                        irradiation: float = None, ambient_temp: float = None,
-                        module_temp: float = None, ac_power: float = None):
-    """Append a scan row to CSV — always matches existing column count."""
-    os.makedirs("data", exist_ok=True)
+# ── Supabase Storage helpers for CSV
+def _storage_headers():
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+    }
+
+
+def _load_csv_from_storage() -> pd.DataFrame:
+    """Download solar_data.csv from Supabase Storage. Returns empty DataFrame on failure."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return pd.DataFrame(columns=CSV_COLUMNS)
+    try:
+        import requests
+        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{STORAGE_CSV_KEY}"
+        r = requests.get(url, headers=_storage_headers(), timeout=10)
+        if r.status_code == 200:
+            from io import StringIO
+            return pd.read_csv(StringIO(r.text))
+        return pd.DataFrame(columns=CSV_COLUMNS)
+    except Exception:
+        return pd.DataFrame(columns=CSV_COLUMNS)
+
+
+def _save_csv_to_storage(df: pd.DataFrame):
+    """Upload the full DataFrame as CSV to Supabase Storage."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return
+    try:
+        import requests
+        csv_bytes = df.to_csv(index=False).encode("utf-8")
+        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{STORAGE_CSV_KEY}"
+        headers = {**_storage_headers(), "Content-Type": "text/csv", "x-upsert": "true"}
+        requests.put(url, headers=headers, data=csv_bytes, timeout=15)
+    except Exception:
+        pass  # Storage upload failure is non-fatal — scan is still saved to DB
+
+
+def _append_scan_to_storage_csv(
+    email: str, pred_class: str, confidence: float, severity: str,
+    irradiation: float = None, ambient_temp: float = None,
+    module_temp: float = None, ac_power: float = None,
+):
+    """Download existing CSV from Supabase Storage, append new row, re-upload."""
     now = datetime.now()
+    df  = _load_csv_from_storage()
 
-    if os.path.exists(DATASET_PATH):
-        existing_cols = pd.read_csv(DATASET_PATH, nrows=0).columns.tolist()
-    else:
-        existing_cols = [
-            "timestamp","date","hour","panel_id",
-            "irradiation","ambient_temp_c","module_temp_c",
-            "dc_power_kw","ac_power_kw","defect_type","efficiency_pct",
-            "confidence","severity","source",
-        ]
+    # Ensure all expected columns exist
+    for col in CSV_COLUMNS:
+        if col not in df.columns:
+            df[col] = ""
 
-    new_row = {col: "" for col in existing_cols}
+    new_row = {col: "" for col in CSV_COLUMNS}
     new_row["timestamp"]   = now.strftime("%Y-%m-%d %H:%M")
     new_row["date"]        = now.strftime("%Y-%m-%d")
     new_row["hour"]        = now.hour
     new_row["panel_id"]    = email
     new_row["defect_type"] = pred_class
-    if "confidence"     in new_row: new_row["confidence"]     = round(confidence * 100, 1)
-    if "severity"       in new_row: new_row["severity"]       = severity
-    if "source"         in new_row: new_row["source"]         = "scan"
-    if "irradiation"    in new_row and irradiation  is not None: new_row["irradiation"]    = irradiation
-    if "ambient_temp_c" in new_row and ambient_temp is not None: new_row["ambient_temp_c"] = ambient_temp
-    if "module_temp_c"  in new_row and module_temp  is not None: new_row["module_temp_c"]  = module_temp
-    if "ac_power_kw"    in new_row and ac_power     is not None: new_row["ac_power_kw"]    = ac_power
+    new_row["confidence"]  = round(confidence * 100, 1)
+    new_row["severity"]    = severity
+    new_row["source"]      = "scan"
+    if irradiation  is not None: new_row["irradiation"]    = irradiation
+    if ambient_temp is not None: new_row["ambient_temp_c"] = ambient_temp
+    if module_temp  is not None: new_row["module_temp_c"]  = module_temp
+    if ac_power     is not None: new_row["ac_power_kw"]    = ac_power
 
-    row_df = pd.DataFrame([new_row])[existing_cols]
-    write_header = not os.path.exists(DATASET_PATH)
-    row_df.to_csv(DATASET_PATH, mode="a", header=write_header, index=False)
+    new_df = pd.DataFrame([new_row])[CSV_COLUMNS]
+    df = pd.concat([df[CSV_COLUMNS], new_df], ignore_index=True)
+    _save_csv_to_storage(df)
 
-def db_save_scan(email: str, pred_class: str, info: dict, confidence: float,
-                 irradiation: float = None, ambient_temp: float = None,
-                 module_temp: float = None, ac_power: float = None):
-    """Save scan to SQLite + CSV. Sensor readings are optional."""
+
+# ── Scan persistence helpers
+def db_save_scan(
+    email: str, pred_class: str, info: dict, confidence: float,
+    irradiation: float = None, ambient_temp: float = None,
+    module_temp: float = None, ac_power: float = None,
+):
+    """Save scan to PostgreSQL + Supabase Storage CSV. Sensor readings are optional."""
     conn = _db()
-    existing = conn.execute("""
-        SELECT id FROM scans
-        WHERE email = ? AND defect_type = ?
-        AND scanned_at >= datetime('now', '-1 minute')
-    """, (email, pred_class)).fetchone()
-    if existing is None:
-        conn.execute("""
-            INSERT INTO scans
-              (email, scanned_at, defect_type, display_en, display_ar,
-               confidence, severity, icon)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            email,
-            datetime.now().strftime("%Y-%m-%d %H:%M"),
-            pred_class, info["display_en"], info["display_ar"],
-            round(confidence, 4), info["severity"], info["icon"],
-        ))
-        conn.commit()
-        _append_scan_to_csv(email, pred_class, confidence, info["severity"],
-                            irradiation, ambient_temp, module_temp, ac_power)
-    conn.close()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id FROM scans
+                WHERE email = %s AND defect_type = %s
+                  AND scanned_at >= NOW() - INTERVAL '1 minute'
+            """, (email, pred_class))
+            existing = cur.fetchone()
+        if existing is None:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO scans
+                      (email, scanned_at, defect_type, display_en, display_ar,
+                       confidence, severity, icon)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    email,
+                    datetime.now(),
+                    pred_class, info["display_en"], info["display_ar"],
+                    round(confidence, 4), info["severity"], info["icon"],
+                ))
+            conn.commit()
+            _append_scan_to_storage_csv(
+                email, pred_class, confidence, info["severity"],
+                irradiation, ambient_temp, module_temp, ac_power,
+            )
+    finally:
+        conn.close()
+
 
 def db_get_scans(email: str, admin: bool = False) -> list:
     """
     Load scans from the database.
-    - Normal users: only their own scans.
-    - Admin: all scans from all users.
+    Normal users: only their own. Admin: all users.
     """
     conn = _db()
-    if admin:
-        rows = conn.execute("""
-            SELECT email, scanned_at, defect_type, display_en, display_ar,
-                   confidence, severity, icon
-            FROM scans ORDER BY scanned_at DESC
-        """).fetchall()
-    else:
-        rows = conn.execute("""
-            SELECT email, scanned_at, defect_type, display_en, display_ar,
-                   confidence, severity, icon
-            FROM scans WHERE email = ? ORDER BY scanned_at DESC
-        """, (email,)).fetchall()
-    conn.close()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if admin:
+                cur.execute("""
+                    SELECT email, scanned_at, defect_type, display_en, display_ar,
+                           confidence, severity, icon
+                    FROM scans ORDER BY scanned_at DESC
+                """)
+            else:
+                cur.execute("""
+                    SELECT email, scanned_at, defect_type, display_en, display_ar,
+                           confidence, severity, icon
+                    FROM scans WHERE email = %s ORDER BY scanned_at DESC
+                """, (email,))
+            rows = cur.fetchall()
+    finally:
+        conn.close()
     return [
         {
-            "email":      r[0], "time": r[1], "class":      r[2],
-            "display_en": r[3], "display_ar": r[4],
-            "confidence": r[5], "severity":   r[6], "icon":  r[7],
+            "email":      r["email"],
+            "time":       r["scanned_at"].strftime("%Y-%m-%d %H:%M") if hasattr(r["scanned_at"], "strftime") else str(r["scanned_at"]),
+            "class":      r["defect_type"],
+            "display_en": r["display_en"],
+            "display_ar": r["display_ar"],
+            "confidence": r["confidence"],
+            "severity":   r["severity"],
+            "icon":       r["icon"],
         }
         for r in rows
     ]
 
+
 def db_delete_scans(email: str):
     """Delete all scans for a specific user."""
     conn = _db()
-    conn.execute("DELETE FROM scans WHERE email = ?", (email,))
-    conn.commit()
-    conn.close()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM scans WHERE email = %s", (email,))
+        conn.commit()
+    finally:
+        conn.close()
+
 
 def _ensure_admin():
     """
     Auto-create the admin account on every app startup.
-    This means the admin NEVER needs to manually register —
-    even after a fresh redeploy the account exists immediately.
-    Password is read from environment variable ADMIN_PASSWORD
-    (set this in Railway Variables) — defaults to a safe value.
+    Password is read from ADMIN_PASSWORD env variable.
     """
     admin_pw = os.environ.get("ADMIN_PASSWORD", "SolarAdmin2026!")
     conn = _db()
-    existing = conn.execute(
-        "SELECT id FROM users WHERE email = ?", (ADMIN_EMAIL,)
-    ).fetchone()
-    if existing is None:
-        conn.execute(
-            "INSERT INTO users (email, pw_hash, role, created_at) VALUES (?, ?, ?, ?)",
-            (ADMIN_EMAIL, _hash(admin_pw), "admin", datetime.now().isoformat()),
-        )
-        conn.commit()
-    conn.close()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM users WHERE email = %s", (ADMIN_EMAIL,))
+            existing = cur.fetchone()
+        if existing is None:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO users (email, pw_hash, role, created_at) VALUES (%s, %s, %s, %s)",
+                    (ADMIN_EMAIL, _hash(admin_pw), "admin", datetime.now()),
+                )
+            conn.commit()
+    finally:
+        conn.close()
 
-# Run on every startup — safe to call repeatedly (checks before inserting)
+
+# Run on every startup
 _ensure_admin()
+
 
 def db_get_all_users() -> list:
     """Admin only: get list of all registered users."""
     conn = _db()
-    rows = conn.execute(
-        "SELECT email, role, created_at FROM users ORDER BY created_at DESC"
-    ).fetchall()
-    conn.close()
-    return [{"email": r[0], "role": r[1], "created": r[2]} for r in rows]
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT email, role, created_at FROM users ORDER BY created_at DESC")
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    return [
+        {
+            "email":   r["email"],
+            "role":    r["role"],
+            "created": r["created_at"].strftime("%Y-%m-%d %H:%M") if hasattr(r["created_at"], "strftime") else str(r["created_at"]),
+        }
+        for r in rows
+    ]
+
 
 def render_auth_page():
     """
     Full-screen login / signup UI.
-    On successful login, a token is stored in st.session_state AND
-    in the browser query params so the session survives page refreshes.
+    On successful login, a token is stored in st.session_state.
     """
-    # ── Try to restore session from token stored in session_state
     for k, v in [("logged_in", False), ("auth_email", ""), ("session_token", "")]:
         if k not in st.session_state:
             st.session_state[k] = v
 
-    # ── Auto-login: validate existing token from session_state
     if not st.session_state.logged_in and st.session_state.session_token:
         email = _validate_token(st.session_state.session_token)
         if email:
@@ -339,9 +399,8 @@ def render_auth_page():
             return
 
     if st.session_state.logged_in:
-        return  # already authenticated
+        return
 
-    # ── Login / signup UI
     _, col, _ = st.columns([1, 1.4, 1])
     with col:
         st.markdown("""
@@ -369,7 +428,6 @@ def render_auth_page():
             if submitted:
                 ok, msg, token = auth_login(email, password)
                 if ok:
-                    # ── Store token in session — survives page refresh
                     st.session_state.logged_in     = True
                     st.session_state.auth_email    = email.lower().strip()
                     st.session_state.user_email    = email.lower().strip()
@@ -398,9 +456,8 @@ def render_auth_page():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 3. THEME — dark mode only (light mode removed)
+# 3. THEME — dark mode only
 # ─────────────────────────────────────────────────────────────────────
-# Initialise all session-state keys used in the app
 for key, default in [
     ("lang",          "en"),
     ("history",       []),
@@ -408,24 +465,21 @@ for key, default in [
     ("user_email",    ""),
     ("logged_in",     False),
     ("auth_email",    ""),
-    ("session_token", ""),   # persistent login token
+    ("session_token", ""),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
 
-# Run auth gate — stops execution here if not logged in
 render_auth_page()
 
-# ── Helpers
 def t(en, ar):
     return ar if st.session_state.lang == "ar" else en
 
 RTL   = "direction:rtl;text-align:right;" if st.session_state.lang == "ar" else ""
 FONT  = "'Cairo', sans-serif"  if st.session_state.lang == "ar" else "'Syne', sans-serif"
 IS_AR = st.session_state.lang == "ar"
-DM    = True  # always dark
+DM    = True
 
-# ── Dark mode color palette (only one theme now)
 BG       = "#1a1f2e"
 BG_CARD  = "#242938"
 BG_HERO  = "linear-gradient(135deg,#1f2d42 0%,#1a1f2e 60%)"
@@ -441,7 +495,6 @@ BAR_BG   = "#2e3a50"
 HERO_TC  = "#e8edf5"
 INPUT_BG = "#2e3a50"
 
-# ── Global CSS
 st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&family=Cairo:wght@400;600;700;800&display=swap');
@@ -453,7 +506,6 @@ html, body, [class*="css"] {{
 }}
 .stApp {{ background-color:{BG}; }}
 
-/* Native widget overrides */
 .stTextInput>div>div>input,
 .stNumberInput>div>div>input {{
     background-color:{INPUT_BG} !important;
@@ -461,7 +513,6 @@ html, body, [class*="css"] {{
     border-color:{BORDER} !important;
     border-radius:8px !important;
 }}
-/* FIX 6: Make input/slider labels readable — match TXT_S (same as perf-card description) */
 .stNumberInput label,
 .stTextInput label,
 .stSlider label,
@@ -481,7 +532,6 @@ html, body, [class*="css"] {{
 .stTabs [data-baseweb="tab"] {{ color:{TXT_M}; font-size:0.92rem; }}
 .stTabs [aria-selected="true"] {{ color:{TXT} !important; border-bottom:2px solid #f5a623; }}
 
-/* Hero */
 .hero {{
     background:{BG_HERO}; border:1px solid {BORDER}; border-radius:16px;
     padding:36px 48px; margin-bottom:28px; position:relative; overflow:hidden; {RTL}
@@ -496,19 +546,16 @@ html, body, [class*="css"] {{
 .hero-title span {{ color:#f5a623; }}
 .hero-sub {{ font-family:'Space Mono',monospace; color:{TXT_M}; font-size:0.85rem; margin-top:10px; letter-spacing:2px; }}
 
-/* Cards */
 .upload-zone {{ border:2px dashed {BORDER}; border-radius:12px; padding:48px; text-align:center; background:{BG_CARD}; {RTL} }}
 .metric-card {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:12px; padding:20px 24px; margin-bottom:12px; {RTL} }}
 .metric-label {{ font-family:'Space Mono',monospace; font-size:0.72rem; color:{TXT_M}; letter-spacing:2px; margin-bottom:6px; }}
 .metric-value {{ font-size:2rem; font-weight:800; color:{TXT}; line-height:1; }}
 .perf-card {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:12px; padding:24px; margin-bottom:16px; {RTL} }}
 
-/* Badges */
 .badge-critical {{ background:#c0392b22; border:1px solid #e74c3c; color:#e74c3c; border-radius:8px; padding:8px 20px; font-weight:800; font-size:1.1rem; display:inline-block; }}
 .badge-warning  {{ background:#b8860b22; border:1px solid #f5a623; color:#f5a623; border-radius:8px; padding:8px 20px; font-weight:800; font-size:1.1rem; display:inline-block; }}
 .badge-good     {{ background:#1a4a2a22; border:1px solid #2ecc71; color:#2ecc71; border-radius:8px; padding:8px 20px; font-weight:800; font-size:1.1rem; display:inline-block; }}
 
-/* Defect card */
 .defect-card {{ background:{BG_CARD}; border-radius:0 10px 10px 0; padding:16px 20px; margin-bottom:10px; {RTL} }}
 .defect-card.critical {{ border-left:4px solid #e74c3c; }}
 .defect-card.warning  {{ border-left:4px solid #f5a623; }}
@@ -518,7 +565,6 @@ html, body, [class*="css"] {{
 .defect-action {{ font-size:{"0.95rem" if IS_AR else "0.88rem"}; color:#f5a623; font-weight:700; }}
 .urgency-box   {{ background:{URG_BG}; border:1px solid {URG_C}; border-radius:8px; padding:12px 16px; margin-top:10px; font-size:0.88rem; color:{URG_C}; font-weight:600; {RTL} }}
 
-/* Misc */
 .section-title {{ font-family:'Space Mono',monospace; font-size:0.72rem; color:{TXT_M}; letter-spacing:3px; margin-bottom:14px; margin-top:26px; text-transform:uppercase; {RTL} }}
 .conf-bar-bg   {{ background:{BAR_BG}; border-radius:4px; height:6px; margin-top:4px; }}
 .conf-bar-fill {{ height:6px; border-radius:4px; background:linear-gradient(90deg,#f5a623,#e74c3c); }}
@@ -528,7 +574,6 @@ html, body, [class*="css"] {{
 .tip-text {{ font-size:{"0.95rem" if IS_AR else "0.88rem"}; color:{TXT_S}; line-height:1.6; }}
 .user-badge {{ background:{BG_CARD}; border:1px solid {BORDER}; border-radius:8px; padding:6px 14px; font-size:0.82rem; color:{TXT_M}; display:inline-block; margin-bottom:8px; }}
 
-/* ── Professional site footer ── */
 .site-footer {{
     margin-top: 56px;
     padding: 22px 0 18px 0;
@@ -563,7 +608,6 @@ html, body, [class*="css"] {{
 # ─────────────────────────────────────────────────────────────────────
 CLASSES = ["Bird-drop","Clean","Dusty","Electrical-damage","Physical-damage","Snow-covered"]
 
-# Urgency strings have emojis stripped here so the PDF helper doesn't need to
 DEFECT_INFO = {
     "Bird-drop":{
         "severity":"warning","display_en":"Bird Dropping","display_ar":"إفرازات الطيور","icon":"🐦",
@@ -651,15 +695,8 @@ def load_effnet():
 
 @st.cache_resource
 def load_perf_model():
-    """Load performance model files with clear error reporting."""
-    files = {
-        "performance_model.pkl":   "performance_model",
-        "performance_scaler.pkl":  "performance_scaler",
-        "model_metadata.json":     "model_metadata",
-        "typical_values.json":     "typical_values",
-    }
-    missing = [f for f in files if not os.path.exists(f)]
-    if missing:
+    files = ["performance_model.pkl", "performance_scaler.pkl", "model_metadata.json", "typical_values.json"]
+    if any(not os.path.exists(f) for f in files):
         return None, None, None, None
     try:
         model  = joblib.load("performance_model.pkl")
@@ -667,15 +704,13 @@ def load_perf_model():
         with open("model_metadata.json") as f:  meta    = json.load(f)
         with open("typical_values.json")  as f: typical = json.load(f)
         return model, scaler, meta, typical
-    except Exception as e:
+    except Exception:
         return None, None, None, None
 
 @st.cache_resource
 def load_lstm():
-    """Load LSTM model files with clear error reporting."""
     required = ["lstm_model.keras", "lstm_scaler.pkl", "lstm_metadata.json", "sample_data.csv"]
-    missing  = [f for f in required if not os.path.exists(f)]
-    if missing:
+    if any(not os.path.exists(f) for f in required):
         return None, None, None, None
     try:
         import tensorflow as tf
@@ -683,11 +718,10 @@ def load_lstm():
         scaler = joblib.load("lstm_scaler.pkl")
         with open("lstm_metadata.json") as f: meta = json.load(f)
         sample = pd.read_csv("sample_data.csv")
-        # Validate metadata has required keys
-        assert "seq_len"  in meta, "lstm_metadata.json missing 'seq_len'"
-        assert "features" in meta, "lstm_metadata.json missing 'features'"
+        assert "seq_len"  in meta
+        assert "features" in meta
         return model, scaler, meta, sample
-    except Exception as e:
+    except Exception:
         return None, None, None, None
 
 effnet_model                                     = load_effnet()
@@ -709,7 +743,6 @@ def preprocess_image(image):
 AMIRI_PATH = os.path.join("fonts", "Amiri-Regular.ttf")
 
 def _safe_en(text: str) -> str:
-    """Strip non-latin / emoji — safe for Helvetica."""
     return "".join(
         c for c in str(text)
         if _ud.category(c) not in ("So", "Cs") and ord(c) < 0x0250
@@ -719,24 +752,14 @@ def _has_amiri() -> bool:
     return os.path.exists(AMIRI_PATH)
 
 def _ar(text: str) -> str:
-    """
-    FIX 4 — Proper Arabic text rendering for FPDF.
-    FPDF renders text left-to-right and doesn't reshape Arabic ligatures.
-    We use arabic_reshaper (joins letters correctly) and python-bidi
-    (reverses the visual order for RTL display) to pre-process every
-    Arabic string before passing it to FPDF.
-    Falls back to raw text if libraries are missing.
-    """
     try:
         import arabic_reshaper
         from bidi.algorithm import get_display
         reshaped = arabic_reshaper.reshape(str(text))
         return get_display(reshaped)
     except ImportError:
-        return str(text)  # graceful fallback if libs not installed
+        return str(text)
 
-
-# Arabic section header translations
 _AR_SECTIONS = {
     "Detection Result":    "نتيجة الكشف",
     "Description":         "الوصف",
@@ -746,8 +769,6 @@ _AR_SECTIONS = {
 
 
 class SolarPDF(FPDF):
-    """FPDF subclass with branded header/footer and bilingual helpers."""
-
     def __init__(self, lang="en"):
         super().__init__()
         self.lang     = lang
@@ -755,46 +776,29 @@ class SolarPDF(FPDF):
         self.set_margins(18, 18, 18)
         self.set_auto_page_break(auto=True, margin=20)
         if self.amiri_ok:
-            # uni=True enables full Unicode support
             self.add_font("Amiri", "", AMIRI_PATH, uni=True)
 
     @property
     def W(self):
-        """Usable page width (avoids multi_cell width=0 crash)."""
         return self.w - self.l_margin - self.r_margin
 
     def header(self):
-        """
-        PDF HEADER — white background, clean typography hierarchy.
-        FIX: "SolarInspect AI" is the ONLY header element (18pt bold orange).
-             "Scan Report" lives ONCE in the body title block — NOT duplicated here.
-        """
-        # White header background
         self.set_fill_color(255, 255, 255)
         self.rect(0, 0, self.w, 18, "F")
-
-        # Brand name — large, bold, orange
         self.set_y(3)
         self.set_font("Helvetica", "B", 18)
-        self.set_text_color(245, 166, 35)   # brand orange
+        self.set_text_color(245, 166, 35)
         self.cell(0, 10, "SolarInspect AI", align="C")
         self.ln(10)
-
-        # Thin brand-orange accent line under the header
         self.set_draw_color(245, 166, 35)
         self.set_line_width(0.6)
         self.line(self.l_margin, self.get_y(), self.w - self.r_margin, self.get_y())
         self.set_line_width(0.2)
-        self.set_draw_color(200, 210, 220)  # reset line colour for body
-
+        self.set_draw_color(200, 210, 220)
         self.set_text_color(0, 0, 0)
         self.ln(6)
 
     def footer(self):
-        """
-        PDF FOOTER — FIX: page numbers removed entirely.
-        Only shows the brand name as a subtle watermark-style footer.
-        """
         self.set_y(-12)
         self.set_font("Helvetica", "I", 8)
         self.set_text_color(180, 190, 200)
@@ -802,11 +806,6 @@ class SolarPDF(FPDF):
         self.set_text_color(0, 0, 0)
 
     def section_header(self, title_en: str):
-        """
-        FIX 4: Bilingual section divider.
-        Shows Arabic translation (reshaped+bidi) when in Arabic mode,
-        English otherwise.
-        """
         self.ln(4)
         self.set_fill_color(26, 40, 60)
         self.set_text_color(245, 166, 35)
@@ -821,33 +820,21 @@ class SolarPDF(FPDF):
         self.ln(3)
 
     def hr(self):
-        """Thin horizontal rule."""
         self.set_draw_color(200, 210, 220)
         self.line(self.l_margin, self.get_y(), self.l_margin + self.W, self.get_y())
         self.ln(4)
 
-    def body_line(self, label_en: str, value_en: str, value_ar: str = "",
-                  label_ar: str = ""):
-        """
-        UPDATED: Label + value row with proper spacing.
-        Arabic mode: each item gets its own clearly separated block with
-        label on one line and value on the next — no more glued-together text.
-        """
+    def body_line(self, label_en: str, value_en: str, value_ar: str = "", label_ar: str = ""):
         if self.lang == "ar" and self.amiri_ok:
-            # ── Arabic: label line (muted colour, smaller)
             self.set_font("Amiri", "", 10)
             self.set_text_color(100, 120, 140)
             lbl = _ar(label_ar) if label_ar else _ar(label_en)
             self.cell(self.W, 7, lbl, ln=True, align="R")
-
-            # ── Arabic: value line (dark, larger, bold-weight via size)
             self.set_font("Amiri", "", 12)
             self.set_text_color(20, 20, 20)
             val = _ar(value_ar) if value_ar else _ar(value_en)
             self.set_x(self.l_margin)
             self.cell(self.W, 8, val, ln=True, align="R")
-
-            # Small gap between items for clear visual separation
             self.ln(3)
         else:
             self.set_font("Helvetica", "B", 10)
@@ -859,7 +846,6 @@ class SolarPDF(FPDF):
         self.set_text_color(0, 0, 0)
 
     def body_para(self, text_en: str, text_ar: str = ""):
-        """FIX 4: Paragraph text — Arabic reshaped+bidi when lang=ar."""
         self.set_text_color(30, 30, 30)
         if self.lang == "ar" and text_ar and self.amiri_ok:
             self.set_font("Amiri", "", 11)
@@ -871,12 +857,7 @@ class SolarPDF(FPDF):
         self.ln(2)
 
     def info_box(self, text_en: str, text_ar: str, severity: str = "info"):
-        """FIX 4: Coloured urgency box — Arabic processed for RTL."""
-        colors = {
-            "critical": (210, 60,  50),
-            "warning":  (200, 140, 30),
-            "info":     (40,  160, 110),
-        }
+        colors = {"critical": (210, 60, 50), "warning": (200, 140, 30), "info": (40, 160, 110)}
         r, g, b = colors.get(severity, (80, 120, 180))
         self.set_fill_color(r, g, b)
         self.set_text_color(255, 255, 255)
@@ -890,7 +871,6 @@ class SolarPDF(FPDF):
         self.ln(3)
 
     def tips_table(self, tips_en: list, tips_ar: list):
-        """FIX 4: Zebra-striped tips — Arabic processed for RTL."""
         use_ar = self.lang == "ar" and tips_ar and self.amiri_ok
         tips   = tips_ar if use_ar else tips_en
         for i, tip in enumerate(tips):
@@ -908,37 +888,25 @@ class SolarPDF(FPDF):
 
 def generate_pdf(pred_class: str, confidence: float, info: dict,
                  lang: str = "en", user_email: str = "", underperf=None) -> bytes:
-    """
-    Generate a styled, bilingual PDF scan report.
-    FIX 4: Arabic text is pre-processed with arabic_reshaper + python-bidi
-            for correct glyph shaping and RTL visual order.
-    FIX 7: "SolarInspect AI" header title increased to 14pt (in SolarPDF.header).
-    Requires: pip install arabic-reshaper python-bidi
-    """
     is_ar = (lang == "ar")
     pdf = SolarPDF(lang=lang)
     pdf.add_page()
 
-    # ── Title block (appears once — header already shows "SolarInspect AI")
     if is_ar and pdf.amiri_ok:
-        # Arabic title — single occurrence
         pdf.set_font("Amiri", "", 16)
         pdf.set_text_color(26, 40, 60)
         pdf.cell(pdf.W, 12, _ar("تقرير الفحص"), ln=True, align="C")
         pdf.set_font("Amiri", "", 10)
         pdf.set_text_color(100, 120, 140)
-        # FIX: date appears exactly once
         pdf.cell(pdf.W, 6, datetime.now().strftime("%Y-%m-%d  %H:%M"), ln=True, align="C")
         if user_email:
             pdf.cell(pdf.W, 6, _ar(f"الحساب: {user_email}"), ln=True, align="C")
     else:
-        # English title — "Scan Report" here only (removed from header to avoid duplication)
         pdf.set_font("Helvetica", "B", 18)
         pdf.set_text_color(26, 40, 60)
         pdf.cell(pdf.W, 12, "Scan Report", ln=True, align="C")
         pdf.set_font("Helvetica", "", 10)
         pdf.set_text_color(100, 120, 140)
-        # FIX: date appears exactly once
         pdf.cell(pdf.W, 6, datetime.now().strftime("%A, %d %B %Y  ·  %H:%M"), ln=True, align="C")
         if user_email:
             pdf.cell(pdf.W, 6, f"Account: {user_email}", ln=True, align="C")
@@ -946,7 +914,6 @@ def generate_pdf(pred_class: str, confidence: float, info: dict,
     pdf.ln(6)
     pdf.hr()
 
-    # ── Detection result
     pdf.section_header("Detection Result")
     pdf.body_line("Defect Type",      info["display_en"],       info["display_ar"],   "نوع العيب")
     pdf.body_line("Confidence",       f"{confidence:.1%}",      f"{confidence:.1%}",  "مستوى الثقة")
@@ -955,26 +922,18 @@ def generate_pdf(pred_class: str, confidence: float, info: dict,
         pdf.body_line("Underperformance", f"{underperf:.1f}%",  f"{underperf:.1f}%",  "الأداء دون المستوى")
     pdf.ln(4)
 
-    # ── Urgency box
     pdf.info_box(
         f"Urgency: {info['urgency_en']}",
         f"مهم: {info['urgency_ar']}",
         severity=info["severity"],
     )
-
-    # ── Description
     pdf.section_header("Description")
     pdf.body_para(info["desc_en"], info["desc_ar"])
-
-    # ── Recommended action
     pdf.section_header("Recommended Action")
     pdf.body_para(info["action_en"], info["action_ar"])
-
-    # ── Maintenance tips
     pdf.section_header("Maintenance Tips")
     pdf.tips_table(info["tips_en"], info["tips_ar"])
 
-    # ── Disclaimer
     pdf.ln(6)
     pdf.hr()
     pdf.set_font("Helvetica", "I", 8)
@@ -998,10 +957,8 @@ def generate_pdf(pred_class: str, confidence: float, info: dict,
 # 6. UI — header, controls, tabs
 # ─────────────────────────────────────────────────────────────────────
 
-# ── Role check must happen before header renders (used in badge)
 is_admin = _get_role(st.session_state.auth_email) == "admin"
 
-# ── Top header
 col_logo, col_ctrl = st.columns([5, 2])
 with col_logo:
     st.markdown(f"""
@@ -1033,15 +990,12 @@ with col_ctrl:
     </div>
     """, unsafe_allow_html=True)
 
-    # All 3 buttons in one row — equal width, compact
     b1, b2, b3 = st.columns(3)
     with b1:
         if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
             st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
             st.rerun()
     with b2:
-        st.markdown('<div style="display:none"></div>', unsafe_allow_html=True)
-        # placeholder — kept for spacing symmetry
         st.markdown(f'<div style="height:38px;background:{BG_CARD};border:1px solid {BORDER};border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:0.8rem;color:{TXT_M};">👤</div>', unsafe_allow_html=True)
     with b3:
         if st.button("🚪 Out", use_container_width=True, key="btn_logout"):
@@ -1053,7 +1007,6 @@ with col_ctrl:
             st.session_state.history       = []
             st.rerun()
 
-# ── Tabs — Dataset tab only shown to admin
 if is_admin:
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         t("🔍 Image Scan",     "🔍 فحص الصورة"),
@@ -1107,7 +1060,6 @@ with tab1:
         display    = info["display_ar"] if IS_AR else info["display_en"]
         sev        = info["severity"]
 
-        # ── Optional sensor readings — user can fill these to enrich the dataset
         st.markdown(f'<div class="section-title">{t("OPTIONAL: ADD SENSOR READINGS TO DATASET","بيانات المستشعر (اختياري)")}</div>', unsafe_allow_html=True)
         sc1, sc2, sc3, sc4 = st.columns(4)
         with sc1: s_irr = st.number_input(t("Irradiation","الإشعاع"),     min_value=0.0, max_value=2.0,   value=0.0, step=0.01, key="s_irr", format="%.2f")
@@ -1115,7 +1067,6 @@ with tab1:
         with sc3: s_mod = st.number_input(t("Module °C","حرارة اللوح"),   min_value=-10.0,max_value=90.0, value=0.0, step=0.1,  key="s_mod", format="%.1f")
         with sc4: s_ac  = st.number_input(t("AC Power (kW)","طاقة AC"),   min_value=0.0, max_value=500.0, value=0.0, step=0.1,  key="s_ac",  format="%.2f")
 
-        # ── Save scan ONCE per upload using file hash as guard
         import hashlib as _hl
         file_hash = _hl.md5(uploaded.getvalue()).hexdigest()
         if "saved_hashes" not in st.session_state:
@@ -1133,18 +1084,15 @@ with tab1:
         col_img, col_res = st.columns([3, 2], gap="large")
 
         with col_img:
-            st.markdown(f'<div class="section-title">{t("UPLOADED IMAGE","الصورة المرفوعة")}</div>',
-                        unsafe_allow_html=True)
+            st.markdown(f'<div class="section-title">{t("UPLOADED IMAGE","الصورة المرفوعة")}</div>', unsafe_allow_html=True)
             st.image(image, use_container_width=True)
 
         with col_res:
-            st.markdown(f'<div class="section-title">{t("SEVERITY","مستوى الخطورة")}</div>',
-                        unsafe_allow_html=True)
+            st.markdown(f'<div class="section-title">{t("SEVERITY","مستوى الخطورة")}</div>', unsafe_allow_html=True)
             badge_open, _ = BADGE[sev]
             st.markdown(f'{badge_open}{info["icon"]} {display}</span>', unsafe_allow_html=True)
 
-            st.markdown(f'<div class="section-title" style="margin-top:20px;">{t("CONFIDENCE","مستوى الثقة")}</div>',
-                        unsafe_allow_html=True)
+            st.markdown(f'<div class="section-title" style="margin-top:20px;">{t("CONFIDENCE","مستوى الثقة")}</div>', unsafe_allow_html=True)
             st.markdown(f"""
             <div class="metric-card">
                 <div class="metric-label">{t("MODEL CONFIDENCE","ثقة النموذج")}</div>
@@ -1154,8 +1102,7 @@ with tab1:
                 </div>
             </div>""", unsafe_allow_html=True)
 
-            st.markdown(f'<div class="section-title">{t("ANALYSIS","التحليل")}</div>',
-                        unsafe_allow_html=True)
+            st.markdown(f'<div class="section-title">{t("ANALYSIS","التحليل")}</div>', unsafe_allow_html=True)
             desc    = info["desc_ar"]    if IS_AR else info["desc_en"]
             action  = info["action_ar"]  if IS_AR else info["action_en"]
             urgency = info["urgency_ar"] if IS_AR else info["urgency_en"]
@@ -1167,9 +1114,7 @@ with tab1:
                 <div class="urgency-box">{urgency}</div>
             </div>""", unsafe_allow_html=True)
 
-        # ── Tips
-        st.markdown(f'<div class="section-title">{t("MAINTENANCE TIPS","نصائح الصيانة")}</div>',
-                    unsafe_allow_html=True)
+        st.markdown(f'<div class="section-title">{t("MAINTENANCE TIPS","نصائح الصيانة")}</div>', unsafe_allow_html=True)
         tips     = info["tips_ar"] if IS_AR else info["tips_en"]
         tip_cols = st.columns(len(tips))
         for i, tip in enumerate(tips):
@@ -1180,17 +1125,12 @@ with tab1:
                     unsafe_allow_html=True,
                 )
 
-        # ── PDF export (generated on demand)
-        st.markdown(f'<div class="section-title">{t("EXPORT REPORT","تصدير التقرير")}</div>',
-                    unsafe_allow_html=True)
-
-        # Inform user if Arabic PDF is not available
+        st.markdown(f'<div class="section-title">{t("EXPORT REPORT","تصدير التقرير")}</div>', unsafe_allow_html=True)
         if not _has_amiri():
             st.info(t(
                 "Place fonts/Amiri-Regular.ttf in the app folder to enable Arabic PDF output.",
                 "ضع ملف fonts/Amiri-Regular.ttf في مجلد التطبيق لتفعيل PDF العربي.",
             ))
-
         if st.button(t("📄 Generate PDF Report", "📄 إنشاء تقرير PDF"), key="gen_pdf"):
             with st.spinner(t("Generating report...", "جاري إنشاء التقرير...")):
                 pdf_bytes = generate_pdf(
@@ -1210,8 +1150,7 @@ with tab1:
 # TAB 2 — PERFORMANCE ANALYZER
 # ═══════════════════════════════════════════════════════════════
 with tab2:
-    st.markdown(f'<div class="section-title">{t("PANEL PERFORMANCE ANALYZER","محلل أداء اللوح")}</div>',
-                unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">{t("PANEL PERFORMANCE ANALYZER","محلل أداء اللوح")}</div>', unsafe_allow_html=True)
 
     if perf_model is None:
         st.warning(t(
@@ -1231,38 +1170,20 @@ with tab2:
         tv = typical_vals
         c1, c2, c3 = st.columns(3)
         with c1:
-            irradiation = st.number_input(
-                t("Irradiation (W/m2/1000)", "الإشعاع"),
-                min_value=0.0, max_value=2.0, value=float(round(tv["IRRADIATION"], 3)), step=0.01,
-            )
+            irradiation = st.number_input(t("Irradiation (W/m2/1000)", "الإشعاع"), min_value=0.0, max_value=2.0, value=float(round(tv["IRRADIATION"], 3)), step=0.01)
         with c2:
-            ambient_temp = st.number_input(
-                t("Ambient Temp (C)", "درجة حرارة المحيط"),
-                min_value=-10.0, max_value=60.0, value=float(round(tv["AMBIENT_TEMPERATURE"], 1)), step=0.1,
-            )
+            ambient_temp = st.number_input(t("Ambient Temp (C)", "درجة حرارة المحيط"), min_value=-10.0, max_value=60.0, value=float(round(tv["AMBIENT_TEMPERATURE"], 1)), step=0.1)
         with c3:
-            module_temp = st.number_input(
-                t("Module Temp (C)", "درجة حرارة اللوح"),
-                min_value=-10.0, max_value=90.0, value=float(round(tv["MODULE_TEMPERATURE"], 1)), step=0.1,
-            )
+            module_temp = st.number_input(t("Module Temp (C)", "درجة حرارة اللوح"), min_value=-10.0, max_value=90.0, value=float(round(tv["MODULE_TEMPERATURE"], 1)), step=0.1)
         c4, c5 = st.columns(2)
         with c4:
-            dc_power = st.number_input(
-                t("DC Power (kW)", "طاقة DC"),
-                min_value=0.0, max_value=500000.0, value=float(round(tv["DC_POWER"], 1)), step=100.0,
-            )
+            dc_power = st.number_input(t("DC Power (kW)", "طاقة DC"), min_value=0.0, max_value=500000.0, value=float(round(tv["DC_POWER"], 1)), step=100.0)
         with c5:
-            ac_power = st.number_input(
-                t("AC Power (kW)", "طاقة AC"),
-                min_value=0.0, max_value=500000.0, value=float(round(tv["AC_POWER"], 1)), step=100.0,
-            )
+            ac_power = st.number_input(t("AC Power (kW)", "طاقة AC"), min_value=0.0, max_value=500000.0, value=float(round(tv["AC_POWER"], 1)), step=100.0)
 
         if st.button(t("Analyze Performance", "تحليل الأداء"), use_container_width=True):
             if irradiation == 0:
-                st.info(t(
-                    "Irradiation is 0 — panel is not generating power (night or fully shaded).",
-                    "الإشعاع = 0 — اللوح لا ينتج طاقة.",
-                ))
+                st.info(t("Irradiation is 0 — panel is not generating power (night or fully shaded).", "الإشعاع = 0 — اللوح لا ينتج طاقة."))
             else:
                 features     = np.array([[irradiation, ambient_temp, module_temp, datetime.now().hour]])
                 features_sc  = perf_scaler.transform(features)
@@ -1326,18 +1247,12 @@ with tab2:
 # ═══════════════════════════════════════════════════════════════
 # TAB 3 — POWER FORECAST
 # ═══════════════════════════════════════════════════════════════
-# ═══════════════════════════════════════════════════════════════
-# TAB 3 — POWER FORECAST
-# FIX 4: If LSTM files missing, show a simulation-based forecast
-#         so the page is always useful, not just an error message.
-# ═══════════════════════════════════════════════════════════════
 with tab3:
     st.markdown(
         f'<div class="section-title">{t("SOLAR POWER FORECAST","توقع الطاقة الشمسية")}</div>',
         unsafe_allow_html=True,
     )
 
-    # ── Always show the input controls regardless of model availability
     st.markdown(f"""<div class="perf-card">
         <div style="font-size:0.92rem;color:{TXT_S};">
             {t('Predict solar power output for the next hours based on weather conditions.',
@@ -1357,9 +1272,7 @@ with tab3:
 
     if st.button(t("Generate Forecast", "توليد التوقع"), use_container_width=True):
         with st.spinner(t("Generating forecast...", "جاري توليد التوقع...")):
-
             if lstm_model is not None:
-                # ── Real LSTM forecast
                 try:
                     import tensorflow as tf
                     seq_len  = lstm_meta["seq_len"]
@@ -1384,40 +1297,29 @@ with tab3:
                     st.error(f"Forecast error: {e}")
                     forecasts, hours, model_label = [], [], ""
             else:
-                # ── FIX 1: Improved physics-based simulation
-                # Uses a realistic solar irradiance model with temperature
-                # correction factor (standard -0.4%/°C above 25°C for Si cells)
                 forecasts, hours = [], []
-                PANEL_CAPACITY_KW = 3.5   # typical residential panel array
+                PANEL_CAPACITY_KW = 3.5
                 INVERTER_EFF      = 0.96
-                TEMP_COEFF        = -0.004  # power loss per °C above 25°C
-
+                TEMP_COEFF        = -0.004
                 start_hour = datetime.now().hour
                 start_min  = datetime.now().minute
 
                 for step in range(steps * 4):
-                    total_minutes = start_min + step * 15
-                    hour_of_day   = (start_hour + total_minutes // 60) % 24
+                    total_minutes  = start_min + step * 15
+                    hour_of_day    = (start_hour + total_minutes // 60) % 24
                     minute_of_hour = total_minutes % 60
 
-                    # Solar curve: smooth sine between 6am-7pm
                     if 6 <= hour_of_day <= 19:
                         solar_angle  = (hour_of_day - 6 + minute_of_hour / 60) / 13 * np.pi
                         solar_factor = max(0, np.sin(solar_angle))
                     else:
                         solar_factor = 0.0
 
-                    # Temperature correction
                     temp_factor = 1 + TEMP_COEFF * max(0, f_mod - 25)
-
-                    # AC power estimate
-                    dc_power = f_irr * PANEL_CAPACITY_KW * solar_factor * temp_factor
-                    ac_power = max(0, dc_power * INVERTER_EFF)
-
-                    # Small realistic noise (±2%)
-                    noise    = np.random.normal(0, ac_power * 0.02)
-                    ac_power = max(0, ac_power + noise)
-
+                    dc_power    = f_irr * PANEL_CAPACITY_KW * solar_factor * temp_factor
+                    ac_power    = max(0, dc_power * INVERTER_EFF)
+                    noise       = np.random.normal(0, ac_power * 0.02)
+                    ac_power    = max(0, ac_power + noise)
                     forecasts.append(round(ac_power, 3))
                     h_label = (start_hour + total_minutes // 60) % 24
                     hours.append(f"{h_label:02d}:{minute_of_hour:02d}")
@@ -1435,10 +1337,7 @@ with tab3:
                     name=model_label,
                 ))
                 fig.update_layout(
-                    title=dict(
-                        text=t("Solar Power Forecast (kW)", "توقع الطاقة الشمسية (كيلوواط)"),
-                        font=dict(color=TXT, size=16)
-                    ),
+                    title=dict(text=t("Solar Power Forecast (kW)", "توقع الطاقة الشمسية (كيلوواط)"), font=dict(color=TXT, size=16)),
                     xaxis=dict(title=t("Time","الوقت"), color=TXT_M, gridcolor=BORDER),
                     yaxis=dict(title=t("AC Power (kW)","طاقة AC"), color=TXT_M, gridcolor=BORDER),
                     paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
@@ -1465,20 +1364,16 @@ with tab3:
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 4 — HISTORY
-# FIX 3: Load from DB safely, users see only their own scans.
 # ═══════════════════════════════════════════════════════════════
 with tab4:
-    st.markdown(f'<div class="section-title">{t("SCAN HISTORY","سجل الفحص")}</div>',
-                unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">{t("SCAN HISTORY","سجل الفحص")}</div>', unsafe_allow_html=True)
 
-    # ── Safe DB load with error handling
     try:
         user_history = db_get_scans(st.session_state.auth_email, admin=is_admin)
     except Exception as e:
         st.error(t(f"Could not load history: {e}", f"خطأ في تحميل السجل: {e}"))
         user_history = []
 
-    # Admin: user filter dropdown
     if is_admin and user_history:
         all_emails = sorted(set(h["email"] for h in user_history))
         selected_user = st.selectbox(
@@ -1503,7 +1398,6 @@ with tab4:
                 'لا توجد فحوصات بعد — ارفع صورة في تبويب الفحص للبدء.')}</div>
         </div>""", unsafe_allow_html=True)
     else:
-        # KPI summary
         total    = len(user_history)
         critical = sum(1 for h in user_history if h["severity"] == "critical")
         warning  = sum(1 for h in user_history if h["severity"] == "warning")
@@ -1522,8 +1416,7 @@ with tab4:
                     <div class="metric-value" style="color:{color};">{val}</div>
                 </div>""", unsafe_allow_html=True)
 
-        st.markdown(f'<div class="section-title">{t("RECENT SCANS","الفحوصات الأخيرة")}</div>',
-                    unsafe_allow_html=True)
+        st.markdown(f'<div class="section-title">{t("RECENT SCANS","الفحوصات الأخيرة")}</div>', unsafe_allow_html=True)
 
         for h in user_history:
             disp_h    = h.get("display_ar","") if IS_AR else h.get("display_en","")
@@ -1547,7 +1440,6 @@ with tab4:
                 unsafe_allow_html=True
             )
 
-        # Clear button
         btn_label = t("🗑 Clear My History","🗑 مسح سجلي")
         if is_admin and "selected_user" in st.session_state and st.session_state.get("hist_filter","All Users") != "All Users":
             btn_label = f"🗑 Clear {st.session_state.hist_filter}'s History"
@@ -1571,7 +1463,6 @@ if is_admin:
         </div>
         """, unsafe_allow_html=True)
 
-        # ── All registered users
         st.markdown(f'<div class="section-title">REGISTERED USERS</div>', unsafe_allow_html=True)
         all_users = db_get_all_users()
         if all_users:
@@ -1592,15 +1483,15 @@ if is_admin:
                     </div>
                 </div>""", unsafe_allow_html=True)
 
-        # ── Dataset browser
         st.markdown(f'<div class="section-title">DATASET BROWSER</div>', unsafe_allow_html=True)
         render_dataset_tab(
             TXT=TXT, TXT_M=TXT_M, TXT_S=TXT_S,
             BG_CARD=BG_CARD, BORDER=BORDER, BAR_BG=BAR_BG,
             IS_AR=IS_AR, DM=DM,
         )
+
 # ─────────────────────────────────────────────────────────────────────
-# SITE FOOTER — centered, professional, branded
+# SITE FOOTER
 # ─────────────────────────────────────────────────────────────────────
 st.markdown(f"""
 <div class="site-footer">
