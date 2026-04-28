@@ -177,27 +177,45 @@ def db_get_scans(email: str, admin: bool = False) -> list:
                 cur.execute("""
                     SELECT email, scanned_at, defect_type, display_en, display_ar,
                            confidence, severity, icon
-                    FROM scans ORDER BY scanned_at DESC
+                    FROM scans ORDER BY scanned_at DESC NULLS LAST
                 """)
             else:
                 cur.execute("""
                     SELECT email, scanned_at, defect_type, display_en, display_ar,
                            confidence, severity, icon
-                    FROM scans WHERE email = %s ORDER BY scanned_at DESC
+                    FROM scans WHERE email = %s ORDER BY scanned_at DESC NULLS LAST
                 """, (email,))
             rows = cur.fetchall()
     finally:
         conn.close()
+
+    def _fmt_time(val):
+        if val is None:
+            return "—"
+        if hasattr(val, "strftime"):
+            return val.strftime("%Y-%m-%d %H:%M")
+        s = str(val)
+        return s[:16] if len(s) >= 16 else s
+
+    def _norm_conf(val):
+        """Confidence in DB is stored 0–1 (e.g. 0.9956). Return as fraction for display."""
+        try:
+            f = float(val)
+            return f if f <= 1.0 else f / 100.0
+        except Exception:
+            return 0.0
+
     return [
         {
             "email":      r["email"],
-            "time":       r["scanned_at"].strftime("%Y-%m-%d %H:%M") if hasattr(r["scanned_at"], "strftime") else str(r["scanned_at"]),
+            "time":       _fmt_time(r["scanned_at"]),
             "class":      r["defect_type"],
             "display_en": r["display_en"],
             "display_ar": r["display_ar"],
-            "confidence": r["confidence"],
+            "confidence": _norm_conf(r["confidence"]),
             "severity":   r["severity"],
             "icon":       r["icon"],
+            "source":     "db",
         }
         for r in rows
     ]
@@ -210,6 +228,95 @@ def db_delete_scans(email: str):
         conn.commit()
     finally:
         conn.close()
+
+def _get_secret(key, default=""):
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.environ.get(key, default)
+
+def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
+    """
+    Load scans from the static solar_data.csv in Supabase Storage.
+    Returns a list of dicts in the same format as db_get_scans().
+    """
+    DEFECT_DISPLAY = {
+        "Bird-drop":          ("Bird Dropping",   "إفرازات الطيور",  "🐦"),
+        "Clean":              ("Clean Panel",      "لوح نظيف",       "✅"),
+        "Dusty":              ("Dust Accumulation","تراكم الغبار",   "🌫️"),
+        "Electrical-damage":  ("Electrical Damage","تلف كهربائي",   "⚡"),
+        "Physical-damage":    ("Physical Damage",  "تلف مادي",       "💥"),
+        "Snow-covered":       ("Snow Coverage",    "تغطية الثلج",    "❄️"),
+    }
+    SEVERITY_MAP = {
+        "Bird-drop": "warning", "Clean": "info", "Dusty": "info",
+        "Electrical-damage": "critical", "Physical-damage": "critical", "Snow-covered": "warning",
+    }
+    url_base = _get_secret("SUPABASE_URL")
+    key      = _get_secret("SUPABASE_SERVICE_KEY")
+    if not url_base or not key:
+        return []
+    try:
+        import requests
+        from io import StringIO
+        headers = {"apikey": key, "Authorization": f"Bearer {key}"}
+        r = requests.get(
+            f"{url_base}/storage/v1/object/solar-data/solar_data.csv",
+            headers=headers, timeout=10
+        )
+        if r.status_code != 200:
+            return []
+        df = pd.read_csv(StringIO(r.text))
+        if "source" in df.columns:
+            df = df[df["source"] == "scan"]
+        if not admin and "panel_id" in df.columns:
+            df = df[df["panel_id"] == email]
+        results = []
+        for _, row in df.iterrows():
+            defect      = str(row.get("defect_type", ""))
+            disp_en, disp_ar, icon = DEFECT_DISPLAY.get(defect, (defect, defect, "🔍"))
+            sev         = str(row.get("severity", SEVERITY_MAP.get(defect, "info")))
+            conf_raw    = row.get("confidence", 0)
+            try:
+                conf = float(conf_raw)
+                conf = conf / 100.0 if conf > 1.0 else conf
+            except Exception:
+                conf = 0.0
+            ts_raw = row.get("timestamp", "")
+            ts_str = str(ts_raw)[:16] if ts_raw else "—"
+            results.append({
+                "email":      str(row.get("panel_id", "")),
+                "time":       ts_str,
+                "class":      defect,
+                "display_en": disp_en,
+                "display_ar": disp_ar,
+                "confidence": conf,
+                "severity":   sev,
+                "icon":       icon,
+                "source":     "csv",
+            })
+        # Sort by time descending
+        results.sort(key=lambda x: x["time"], reverse=True)
+        return results
+    except Exception:
+        return []
+
+def get_full_history(email: str, admin: bool = False) -> list:
+    """Combine DB scans + CSV scans, deduplicate by (email+defect+time), sort by time desc."""
+    db_scans  = db_get_scans(email, admin=admin)
+    csv_scans = _load_csv_scans_as_history(email, admin=admin)
+    # Deduplicate: DB scans take priority, skip CSV entries already in DB
+    seen = set()
+    for h in db_scans:
+        seen.add((h["email"], h["class"], h["time"][:13]))  # match to hour precision
+    combined = list(db_scans)
+    for h in csv_scans:
+        key = (h["email"], h["class"], h["time"][:13])
+        if key not in seen:
+            combined.append(h)
+            seen.add(key)
+    combined.sort(key=lambda x: x["time"], reverse=True)
+    return combined
 
 def _ensure_admin():
     admin_pw = _get_secret("ADMIN_PASSWORD", "SolarAdmin2026!")
@@ -1054,44 +1161,81 @@ with tab3:
 with tab4:
     st.markdown(f'<div class="section-title">{t("SCAN HISTORY","سجل الفحص")}</div>', unsafe_allow_html=True)
     if not is_logged_in:
-        # Show preview of what history looks like
+        # Show blurred preview
         st.markdown(f"""
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
             {''.join(f'<div class="metric-card" style="text-align:center;opacity:0.45;"><div class="metric-label">——</div><div class="metric-value" style="color:#f5a623;">—</div></div>' for _ in range(4))}
         </div>""", unsafe_allow_html=True)
         for _ in range(3):
-            st.markdown(f'<div class="history-card" style="opacity:0.35;filter:blur(1.5px);"><div style="display:flex;justify-content:space-between;align-items:center;"><div>🔍 <span style="font-weight:700;margin-left:8px;color:{TXT};">████████</span><span style="margin-left:10px;color:{TXT_M};font-size:0.8rem;">██% confidence</span></div><div><span style="color:#f5a623;font-size:0.8rem;font-weight:700;">WARNING</span><span style="color:{TXT_M};font-size:0.73rem;"> · ████-██-██</span></div></div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="history-card" style="opacity:0.35;filter:blur(1.5px);"><div style="display:flex;justify-content:space-between;align-items:center;"><div>🔍 <span style="font-weight:700;margin-left:8px;color:{TXT};">████████</span><span style="margin-left:10px;color:{TXT_M};font-size:0.8rem;">██% {t("confidence","ثقة")}</span></div><div><span style="color:#f5a623;font-size:0.8rem;font-weight:700;">WARNING</span><span style="color:{TXT_M};font-size:0.73rem;"> · ████-██-██</span></div></div></div>', unsafe_allow_html=True)
         st.markdown(f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;padding:20px;text-align:center;margin-top:12px;"><div style="font-size:1.2rem;margin-bottom:6px;">🔒</div><div style="font-weight:700;color:{TXT};margin-bottom:4px;">{t("Log in to view your scan history","سجّل دخولك لعرض سجل الفحص")}</div><div style="font-size:0.85rem;color:{TXT_M};">{t("All your scans are saved and accessible after login.","جميع فحوصاتك محفوظة ويمكن الوصول إليها بعد تسجيل الدخول.")}</div></div>', unsafe_allow_html=True)
     else:
         try:
-            user_history = db_get_scans(st.session_state.auth_email, admin=is_admin)
+            user_history = get_full_history(st.session_state.auth_email, admin=is_admin)
         except Exception as e:
             st.error(f"Could not load history: {e}")
             user_history = []
-        if is_admin and user_history:
-            all_emails = sorted(set(h["email"] for h in user_history))
-            sel_user = st.selectbox(t("Filter by user","تصفية حسب المستخدم"),["All Users"]+all_emails,key="hist_filter")
-            if sel_user != "All Users":
-                user_history = [h for h in user_history if h["email"]==sel_user]
+
+        # Build email list for filter (all users if admin)
+        if is_admin:
+            all_emails = sorted(set(h["email"] for h in user_history if h["email"]))
+            filter_opts = [t("All Users","جميع المستخدمين")] + all_emails
+            sel_user = st.selectbox(t("Filter by user","تصفية حسب المستخدم"), filter_opts, key="hist_filter")
+            if sel_user not in ("All Users", "جميع المستخدمين"):
+                user_history = [h for h in user_history if h["email"] == sel_user]
+
         if not user_history:
             st.markdown(f'<div style="text-align:center;color:{TXT_M};padding:40px;"><div style="font-size:2.5rem;margin-bottom:12px;">📋</div><div>{t("No scans yet.","لا توجد فحوصات بعد.")}</div></div>', unsafe_allow_html=True)
         else:
-            total=len(user_history); critical=sum(1 for h in user_history if h["severity"]=="critical")
-            warning=sum(1 for h in user_history if h["severity"]=="warning"); good=sum(1 for h in user_history if h["severity"]=="info")
-            s1,s2,s3,s4=st.columns(4)
-            for col,le,la,val,color in [(s1,"TOTAL","الإجمالي",total,"#f5a623"),(s2,"CRITICAL","حرج",critical,"#e74c3c"),(s3,"WARNINGS","تحذيرات",warning,"#f5a623"),(s4,"GOOD","جيد",good,"#2ecc71")]:
+            total    = len(user_history)
+            critical = sum(1 for h in user_history if h["severity"] == "critical")
+            warning  = sum(1 for h in user_history if h["severity"] == "warning")
+            good     = sum(1 for h in user_history if h["severity"] == "info")
+
+            s1, s2, s3, s4 = st.columns(4)
+            for col, le, la, val, color in [
+                (s1, "TOTAL",    "الإجمالي",  total,    "#f5a623"),
+                (s2, "CRITICAL", "حرج",       critical, "#e74c3c"),
+                (s3, "WARNINGS", "تحذيرات",   warning,  "#f5a623"),
+                (s4, "GOOD",     "جيد",       good,     "#2ecc71"),
+            ]:
                 with col:
                     st.markdown(f'<div class="metric-card" style="text-align:center;"><div class="metric-label">{la if IS_AR else le}</div><div class="metric-value" style="color:{color};">{val}</div></div>', unsafe_allow_html=True)
+
             for h in user_history:
-                disp_h=h.get("display_ar","") if IS_AR else h.get("display_en","")
-                sev=h.get("severity","info"); sev_color={"critical":"#e74c3c","warning":"#f5a623","info":"#2ecc71"}.get(sev,"#aaa")
-                conf=h.get("confidence",0); icon=h.get("icon","🔍"); timestamp=h.get("time","")
-                user_line=f"👤 {h['email']} · " if is_admin else ""
-                st.markdown(f'<div class="history-card"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;"><div><span style="font-size:1.1rem;">{icon}</span><span style="font-weight:700;margin-left:8px;color:{TXT};">{disp_h}</span><span style="margin-left:10px;color:{TXT_M};font-size:0.8rem;">{conf:.0%} {t("confidence","ثقة")}</span></div><div style="text-align:right;flex-shrink:0;"><span style="color:{TXT_M};font-size:0.73rem;">{user_line}</span><span style="color:{sev_color};font-size:0.8rem;font-weight:700;">{sev.upper()}</span><span style="color:{TXT_M};font-size:0.73rem;"> · {timestamp}</span></div></div></div>', unsafe_allow_html=True)
-            if st.button(t("🗑 Clear My History","🗑 مسح سجلي"), key="clear_hist"):
-                target=st.session_state.get("hist_filter",st.session_state.auth_email)
-                if not is_admin or target=="All Users": target=st.session_state.auth_email
-                db_delete_scans(target); st.rerun()
+                disp_h    = h.get("display_ar", "") if IS_AR else h.get("display_en", "")
+                sev       = h.get("severity", "info")
+                sev_color = {"critical": "#e74c3c", "warning": "#f5a623", "info": "#2ecc71"}.get(sev, "#aaa")
+                sev_lbl   = {"critical": "حرج", "warning": "تحذير", "info": "جيد"}.get(sev, sev).upper() if IS_AR else sev.upper()
+                conf      = h.get("confidence", 0)
+                conf_pct  = f"{conf:.0%}" if conf <= 1.0 else f"{conf:.0f}%"
+                icon      = h.get("icon", "🔍")
+                timestamp = h.get("time", "—")
+                email_lbl = f'<span style="color:{TXT_M};font-size:0.78rem;">👤 {h["email"]} · </span>' if is_admin else ""
+
+                st.markdown(
+                    f'<div class="history-card">'
+                    f'<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">'
+                    f'<div>'
+                    f'<span style="font-size:1.1rem;">{icon}</span>'
+                    f'<span style="font-weight:700;margin-left:8px;color:{TXT};">{disp_h}</span>'
+                    f'<span style="margin-left:10px;color:{TXT_M};font-size:0.8rem;">{conf_pct} {t("confidence","ثقة")}</span>'
+                    f'</div>'
+                    f'<div style="text-align:right;flex-shrink:0;">'
+                    f'{email_lbl}'
+                    f'<span style="color:{sev_color};font-size:0.8rem;font-weight:700;">{sev_lbl}</span>'
+                    f'<span style="color:{TXT_M};font-size:0.73rem;"> · {timestamp}</span>'
+                    f'</div>'
+                    f'</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+            if st.button(t("🗑 Clear My History", "🗑 مسح سجلي"), key="clear_hist"):
+                target = st.session_state.get("hist_filter", st.session_state.auth_email)
+                if not is_admin or target in ("All Users", "جميع المستخدمين"):
+                    target = st.session_state.auth_email
+                db_delete_scans(target)
+                st.rerun()
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 5 — DATASET (ADMIN ONLY)
