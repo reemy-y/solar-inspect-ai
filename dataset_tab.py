@@ -18,14 +18,9 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────────────
 # DATABASE CONNECTION (reuses the same DATABASE_URL as app.py)
 # ─────────────────────────────────────────────────────────────────────
-def _get_secret(key, default=""):
-    try:
-        return st.secrets[key]
-    except Exception:
-        return os.environ.get(key, default)
-
-SUPABASE_URL = _get_secret("SUPABASE_URL")
-SUPABASE_KEY = _get_secret("SUPABASE_SERVICE_KEY")
+DATABASE_URL  = os.environ.get("DATABASE_URL")
+SUPABASE_URL  = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY  = os.environ.get("SUPABASE_SERVICE_KEY", "")
 STORAGE_BUCKET  = "solar-data"
 STORAGE_CSV_KEY = "solar_data.csv"
 
@@ -38,21 +33,10 @@ CSV_COLUMNS = [
 
 
 def _db():
-    def _s(k, d=""):
-        try:
-            return st.secrets[k]
-        except Exception:
-            return os.environ.get(k, d)
-
-    conn = psycopg2.connect(
-        host=_s("DB_HOST"),
-        port=int(_s("DB_PORT", "5432")),
-        dbname=_s("DB_NAME", "postgres"),
-        user=_s("DB_USER"),
-        password=_s("DB_PASSWORD"),
-        sslmode="require",
-    )
-    return conn
+    if not DATABASE_URL:
+        st.error("DATABASE_URL environment variable is not set.")
+        st.stop()
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -65,7 +49,7 @@ def _storage_headers():
     }
 
 
-@st.cache_data(show_spinner=False, ttl=60)
+@st.cache_data(show_spinner=False, ttl=5)
 def load_static_dataset() -> pd.DataFrame:
     """
     Download solar_data.csv from Supabase Storage.
@@ -163,7 +147,7 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
             "ac_power_kw":    "",
             "defect_type":    row["defect_type"],
             "efficiency_pct": "",
-            "confidence":     round(float(row["confidence"]) * 100, 1),
+            "confidence":     round(float(row["confidence"]) * 100, 1) if float(row["confidence"]) <= 1.0 else round(float(row["confidence"]), 1),
             "severity":       row["severity"],
             "source":         "scan",
         })
