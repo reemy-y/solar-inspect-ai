@@ -28,17 +28,8 @@ ADMIN_EMAIL  = "reemya185@gmail.com"
 TOKEN_KEY    = "solar_session_token"
 
 # ── Supabase Storage config (for CSV persistence)
-SUPABASE_URL    = os.environ.get("SUPABASE_URL", "")        # e.g. https://xxxx.supabase.co
-SUPABASE_KEY    = os.environ.get("SUPABASE_SERVICE_KEY", "") # service role key (has storage write)
-STORAGE_BUCKET  = "solar-data"
-STORAGE_CSV_KEY = "solar_data.csv"
-
-CSV_COLUMNS = [
-    "timestamp", "date", "hour", "panel_id",
-    "irradiation", "ambient_temp_c", "module_temp_c",
-    "dc_power_kw", "ac_power_kw", "defect_type", "efficiency_pct",
-    "confidence", "severity", "source",
-]
+# Storage credentials used only by dataset_tab.py (admin merge).
+# app.py does NOT write to the CSV — all mutation is admin-controlled.
 
 
 def _db():
@@ -178,76 +169,6 @@ def auth_login(email: str, password: str):
     return True, "Logged in successfully.", token
 
 
-# ── Supabase Storage helpers for CSV
-def _storage_headers():
-    return {
-        "apikey": SUPABASE_KEY,
-        "Authorization": f"Bearer {SUPABASE_KEY}",
-    }
-
-
-def _load_csv_from_storage() -> pd.DataFrame:
-    """Download solar_data.csv from Supabase Storage. Returns empty DataFrame on failure."""
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return pd.DataFrame(columns=CSV_COLUMNS)
-    try:
-        import requests
-        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{STORAGE_CSV_KEY}"
-        r = requests.get(url, headers=_storage_headers(), timeout=10)
-        if r.status_code == 200:
-            from io import StringIO
-            return pd.read_csv(StringIO(r.text))
-        return pd.DataFrame(columns=CSV_COLUMNS)
-    except Exception:
-        return pd.DataFrame(columns=CSV_COLUMNS)
-
-
-def _save_csv_to_storage(df: pd.DataFrame):
-    """Upload the full DataFrame as CSV to Supabase Storage."""
-    if not SUPABASE_URL or not SUPABASE_KEY:
-        return
-    try:
-        import requests
-        csv_bytes = df.to_csv(index=False).encode("utf-8")
-        url = f"{SUPABASE_URL}/storage/v1/object/{STORAGE_BUCKET}/{STORAGE_CSV_KEY}"
-        headers = {**_storage_headers(), "Content-Type": "text/csv", "x-upsert": "true"}
-        requests.put(url, headers=headers, data=csv_bytes, timeout=15)
-    except Exception:
-        pass  # Storage upload failure is non-fatal — scan is still saved to DB
-
-
-def _append_scan_to_storage_csv(
-    email: str, pred_class: str, confidence: float, severity: str,
-    irradiation: float = None, ambient_temp: float = None,
-    module_temp: float = None, ac_power: float = None,
-):
-    """Download existing CSV from Supabase Storage, append new row, re-upload."""
-    now = datetime.now()
-    df  = _load_csv_from_storage()
-
-    # Ensure all expected columns exist
-    for col in CSV_COLUMNS:
-        if col not in df.columns:
-            df[col] = ""
-
-    new_row = {col: "" for col in CSV_COLUMNS}
-    new_row["timestamp"]   = now.strftime("%Y-%m-%d %H:%M")
-    new_row["date"]        = now.strftime("%Y-%m-%d")
-    new_row["hour"]        = now.hour
-    new_row["panel_id"]    = email
-    new_row["defect_type"] = pred_class
-    new_row["confidence"]  = round(confidence * 100, 1)
-    new_row["severity"]    = severity
-    new_row["source"]      = "scan"
-    if irradiation  is not None: new_row["irradiation"]    = irradiation
-    if ambient_temp is not None: new_row["ambient_temp_c"] = ambient_temp
-    if module_temp  is not None: new_row["module_temp_c"]  = module_temp
-    if ac_power     is not None: new_row["ac_power_kw"]    = ac_power
-
-    new_df = pd.DataFrame([new_row])[CSV_COLUMNS]
-    df = pd.concat([df[CSV_COLUMNS], new_df], ignore_index=True)
-    _save_csv_to_storage(df)
-
 
 # ── Scan persistence helpers
 def db_save_scan(
@@ -255,7 +176,11 @@ def db_save_scan(
     irradiation: float = None, ambient_temp: float = None,
     module_temp: float = None, ac_power: float = None,
 ):
-    """Save scan to PostgreSQL + Supabase Storage CSV. Sensor readings are optional."""
+    """
+    Save scan to PostgreSQL only.
+    The static CSV dataset is NEVER touched here — only the admin can merge via dataset_tab.py.
+    merged_into_dataset starts as FALSE so it appears in the admin's pending queue.
+    """
     conn = _db()
     try:
         with conn.cursor() as cur:
@@ -270,8 +195,8 @@ def db_save_scan(
                 cur.execute("""
                     INSERT INTO scans
                       (email, scanned_at, defect_type, display_en, display_ar,
-                       confidence, severity, icon)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                       confidence, severity, icon, merged_into_dataset)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE)
                 """, (
                     email,
                     datetime.now(),
@@ -279,10 +204,6 @@ def db_save_scan(
                     round(confidence, 4), info["severity"], info["icon"],
                 ))
             conn.commit()
-            _append_scan_to_storage_csv(
-                email, pred_class, confidence, info["severity"],
-                irradiation, ambient_temp, module_temp, ac_power,
-            )
     finally:
         conn.close()
 
