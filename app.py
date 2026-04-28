@@ -33,15 +33,14 @@ TOKEN_KEY    = "solar_session_token"
 
 
 def _db():
-    """
-    Open a new psycopg2 connection to Supabase PostgreSQL.
-    Always close the connection after use.
-    Tables are expected to already exist in Supabase (created via SQL Editor).
-    """
-    if not DATABASE_URL:
-        st.error("DATABASE_URL environment variable is not set. Please configure it on Render.")
-        st.stop()
-    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+    conn = psycopg2.connect(
+        host=os.environ.get("DB_HOST"),
+        port=int(os.environ.get("DB_PORT", "5432")),
+        dbname=os.environ.get("DB_NAME"),
+        user=os.environ.get("DB_USER"),
+        password=os.environ.get("DB_PASSWORD"),
+        sslmode="require",
+    )
     return conn
 
 

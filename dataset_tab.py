@@ -18,9 +18,14 @@ from datetime import datetime
 # ─────────────────────────────────────────────────────────────────────
 # DATABASE CONNECTION (reuses the same DATABASE_URL as app.py)
 # ─────────────────────────────────────────────────────────────────────
-DATABASE_URL  = os.environ.get("DATABASE_URL")
-SUPABASE_URL  = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY  = os.environ.get("SUPABASE_SERVICE_KEY", "")
+def _get_secret(key, default=""):
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.environ.get(key, default)
+
+SUPABASE_URL = _get_secret("SUPABASE_URL")
+SUPABASE_KEY = _get_secret("SUPABASE_SERVICE_KEY")
 STORAGE_BUCKET  = "solar-data"
 STORAGE_CSV_KEY = "solar_data.csv"
 
@@ -33,10 +38,21 @@ CSV_COLUMNS = [
 
 
 def _db():
-    if not DATABASE_URL:
-        st.error("DATABASE_URL environment variable is not set.")
-        st.stop()
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    def _s(k, d=""):
+        try:
+            return st.secrets[k]
+        except Exception:
+            return os.environ.get(k, d)
+
+    conn = psycopg2.connect(
+        host=_s("DB_HOST"),
+        port=int(_s("DB_PORT", "5432")),
+        dbname=_s("DB_NAME", "postgres"),
+        user=_s("DB_USER"),
+        password=_s("DB_PASSWORD"),
+        sslmode="require",
+    )
+    return conn
 
 
 # ─────────────────────────────────────────────────────────────────────
