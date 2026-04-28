@@ -283,7 +283,14 @@ def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
             except Exception:
                 conf = 0.0
             ts_raw = row.get("timestamp", "")
-            ts_str = str(ts_raw)[:16] if ts_raw else "—"
+            # Guard against NaN/None/empty
+            try:
+                if pd.isna(ts_raw) or str(ts_raw).strip().lower() in ("", "nan", "none", "nat"):
+                    ts_str = "—"
+                else:
+                    ts_str = str(ts_raw)[:16]
+            except Exception:
+                ts_str = "—"
             results.append({
                 "email":      str(row.get("panel_id", "")),
                 "time":       ts_str,
