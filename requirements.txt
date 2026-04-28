@@ -14,3 +14,4 @@ arabic-reshaper>=3.0.0
 python-bidi>=0.4.2
 plotly>=5.20.0
 psycopg2-binary>=2.9.9
+requests>=2.31.0
