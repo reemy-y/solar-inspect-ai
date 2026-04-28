@@ -1,10 +1,3 @@
-"""
-dataset_tab.py — Admin-only dataset panel for SolarInspect AI.
-- STATIC DATASET (solar_data.csv in Supabase Storage) → analysis only
-- SCAN LOG (scans table in PostgreSQL) → written on every user scan
-- ADMIN MERGE → admin approves pending scans into static CSV
-"""
-
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
