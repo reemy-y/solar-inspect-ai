@@ -1,3 +1,10 @@
+"""
+dataset_tab.py — Admin-only dataset panel for SolarInspect AI.
+- STATIC DATASET (solar_data.csv in Supabase Storage) → analysis only
+- SCAN LOG (scans table in PostgreSQL) → written on every user scan
+- ADMIN MERGE → admin approves pending scans into static CSV
+"""
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -112,26 +119,6 @@ def _get_pending_scans() -> pd.DataFrame:
     df["scanned_at"] = pd.to_datetime(df["scanned_at"])
     return df
 
-def _get_all_db_scans() -> pd.DataFrame:
-    """Get ALL scans from the DB (both merged and pending) for the history view."""
-    conn = _db()
-    try:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("""
-                SELECT email, scanned_at, defect_type, display_en, display_ar,
-                       confidence, severity, icon, merged_into_dataset
-                FROM scans
-                ORDER BY scanned_at DESC
-            """)
-            rows = cur.fetchall()
-    finally:
-        conn.close()
-    if not rows:
-        return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    df["scanned_at"] = pd.to_datetime(df["scanned_at"])
-    return df
-
 def _mark_all_merged():
     conn = _db()
     try:
@@ -202,89 +189,8 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             )
 
     # ═══════════════════════════════════════════════════════
-    # SECTION 0 — ALL DB SCANS HISTORY (users + timestamps)
-    # ═══════════════════════════════════════════════════════
-    section("ALL USER SCANS — FROM DATABASE", "جميع الفحوصات من قاعدة البيانات")
-    st.markdown(
-        f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;'
-        f'padding:12px 18px;margin-bottom:16px;font-size:0.85rem;color:{TXT_M};">'
-        f'🗄️ {t("Every scan submitted by users — including timestamp, defect, severity, and merge status.","كل فحص قدمه المستخدمون — يتضمن التوقيت، العيب، الخطورة، وحالة الدمج.")}'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    try:
-        all_scans_df = _get_all_db_scans()
-    except Exception as e:
-        st.error(f"{t('Could not load scans','تعذر تحميل الفحوصات')}: {e}")
-        all_scans_df = pd.DataFrame()
-
-    if all_scans_df.empty:
-        st.markdown(
-            f'<div style="text-align:center;color:{TXT_M};padding:24px 0;">'
-            f'📭 {t("No scans in the database yet.","لا توجد فحوصات في قاعدة البيانات بعد.")}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        # KPIs
-        ks1, ks2, ks3, ks4 = st.columns(4)
-        kpi(ks1, "TOTAL SCANS",   "إجمالي الفحوصات", str(len(all_scans_df)),                                                        "#f5a623")
-        kpi(ks2, "UNIQUE USERS",  "مستخدمون فريدون",  str(all_scans_df["email"].nunique()),                                          "#2ecc71")
-        kpi(ks3, "PENDING MERGE", "بانتظار الدمج",    str(len(all_scans_df[all_scans_df["merged_into_dataset"] == False])),           "#3498db")
-        kpi(ks4, "CRITICAL",      "حرج",              str(len(all_scans_df[all_scans_df["severity"] == "critical"])),                 "#e74c3c")
-
-        # User filter
-        all_emails = sorted(all_scans_df["email"].dropna().unique().tolist())
-        sel_hist   = st.selectbox(
-            t("Filter by user", "تصفية حسب المستخدم"),
-            [t("All Users", "جميع المستخدمين")] + all_emails,
-            key="dst_hist_filter"
-        )
-        filtered_scans = all_scans_df if sel_hist in ("All Users", "جميع المستخدمين") else all_scans_df[all_scans_df["email"] == sel_hist]
-
-        # Show as history cards — no sensor params
-        BADGE_COLORS = {"critical": "#e74c3c", "warning": "#f5a623", "info": "#2ecc71"}
-        SEVERITY_AR  = {"critical": "حرج", "warning": "تحذير", "info": "جيد"}
-
-        for _, row in filtered_scans.head(50).iterrows():
-            disp     = row.get("display_ar", "") if IS_AR else row.get("display_en", "")
-            sev      = row.get("severity", "info")
-            sev_col  = BADGE_COLORS.get(sev, "#aaa")
-            sev_lbl  = SEVERITY_AR.get(sev, sev).upper() if IS_AR else sev.upper()
-            conf     = float(row.get("confidence", 0))
-            conf_pct = f"{conf:.0%}" if conf <= 1.0 else f"{conf:.0f}%"
-            icon     = row.get("icon", "🔍")
-            ts       = row.get("scanned_at")
-            ts_str   = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts, "strftime") else str(ts)[:16]
-            merged   = row.get("merged_into_dataset", False)
-            merged_badge = f'<span style="color:#2ecc71;font-size:0.7rem;">✅ {t("merged","مدمج")}</span>' if merged else f'<span style="color:#f5a623;font-size:0.7rem;">⏳ {t("pending","معلق")}</span>'
-
-            st.markdown(
-                f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;'
-                f'padding:12px 18px;margin-bottom:6px;">'
-                f'<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">'
-                f'<div style="flex:1;min-width:0;">'
-                f'<span style="font-size:1.1rem;">{icon}</span>'
-                f'<span style="font-weight:700;margin-left:8px;color:{TXT};">{disp}</span>'
-                f'<span style="margin-left:10px;color:{TXT_M};font-size:0.78rem;">👤 {row["email"]}</span>'
-                f'</div>'
-                f'<div style="text-align:right;flex-shrink:0;display:flex;gap:10px;align-items:center;">'
-                f'{merged_badge}'
-                f'<span style="color:{sev_col};font-size:0.8rem;font-weight:700;">{sev_lbl}</span>'
-                f'<span style="color:{TXT_M};font-size:0.73rem;">{conf_pct}</span>'
-                f'<span style="color:{TXT_M};font-size:0.73rem;">🕐 {ts_str}</span>'
-                f'</div></div></div>',
-                unsafe_allow_html=True,
-            )
-
-        st.caption(t(f"Showing {len(filtered_scans.head(50))} of {len(filtered_scans)} scans",
-                     f"عرض {len(filtered_scans.head(50))} من {len(filtered_scans)} فحص"))
-
-    # ═══════════════════════════════════════════════════════
     # SECTION 1 — STATIC DATASET ANALYSIS
     # ═══════════════════════════════════════════════════════
-    st.markdown("<hr style='border:1px solid #2e3a50;margin:32px 0;'>", unsafe_allow_html=True)
     section("APPROVED DATASET — STATIC ANALYSIS", "البيانات المعتمدة — تحليل ثابت")
     st.markdown(
         f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;'
@@ -363,12 +269,18 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         freal  = real if sel_u in ("All Users", "جميع المستخدمين") else real[real["panel_id"] == sel_u]
 
         show_cols = [c for c in ["timestamp", "panel_id", "defect_type", "confidence", "severity"] if c in freal.columns]
-        disp = freal[show_cols].rename(columns={
-            "panel_id": t("user_email", "البريد"),
-            "defect_type": t("defect_type", "نوع العيب"),
-            "confidence": t("confidence", "الثقة"),
-            "severity": t("severity", "الخطورة"),
-            "timestamp": t("timestamp", "التوقيت"),
+        disp = freal[show_cols].copy()
+        # Clean NaN timestamps
+        if "timestamp" in disp.columns:
+            disp["timestamp"] = disp["timestamp"].apply(
+                lambda v: "—" if pd.isna(v) or str(v).strip().lower() in ("nan","none","nat","") else str(v)[:16]
+            )
+        disp = disp.rename(columns={
+            "panel_id":    t("user_email", "البريد"),
+            "defect_type": t("defect", "العيب"),
+            "confidence":  t("confidence", "الثقة"),
+            "severity":    t("severity", "الخطورة"),
+            "timestamp":   t("timestamp", "التوقيت"),
         }).sort_values(t("timestamp", "التوقيت"), ascending=False)
         st.dataframe(disp, use_container_width=True, hide_index=True)
         st.caption(t(f"{len(disp)} records shown", f"{len(disp)} سجل"))
