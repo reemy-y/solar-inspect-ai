@@ -71,7 +71,13 @@ def load_static_dataset() -> pd.DataFrame:
         if r.status_code == 200:
             from io import StringIO
             df = pd.read_csv(StringIO(r.text))
-            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+            # Repair any blank/nan/none timestamps in place
+            if "timestamp" in df.columns:
+                df["timestamp"] = df["timestamp"].apply(
+                    lambda v: pd.NaT if pd.isna(v) or str(v).strip().lower() in ("", "nan", "none", "nat", "—")
+                    else v
+                )
+                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
             for col in ["source", "confidence", "severity"]:
                 if col not in df.columns:
                     df[col] = None
@@ -134,11 +140,22 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
     new_rows = []
     for _, row in pending_df.iterrows():
         ts = row["scanned_at"]
-        conf = float(row["confidence"])
+        # Always ensure a real timestamp — fallback to now if null/NaT
+        try:
+            if ts is None or (hasattr(ts, '__class__') and str(ts) in ("NaT", "None", "")):
+                ts = datetime.now()
+            ts = pd.to_datetime(ts)
+            if pd.isna(ts):
+                ts = datetime.now()
+        except Exception:
+            ts = datetime.now()
+
+        ts_str = ts.strftime("%Y-%m-%d %H:%M")
+        conf   = float(row["confidence"])
         new_rows.append({
-            "timestamp":      str(ts)[:16],
-            "date":           str(ts)[:10],
-            "hour":           ts.hour if hasattr(ts, "hour") else "",
+            "timestamp":      ts_str,
+            "date":           ts.strftime("%Y-%m-%d"),
+            "hour":           ts.hour,
             "panel_id":       row["email"],
             "irradiation":    "",
             "ambient_temp_c": "",
@@ -155,6 +172,13 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
     for col in CSV_COLUMNS:
         if col not in static_df.columns:
             static_df[col] = ""
+    # Also fix any existing — or NaN timestamps in the static dataset
+    if "timestamp" in static_df.columns:
+        static_df["timestamp"] = static_df["timestamp"].apply(
+            lambda v: datetime.now().strftime("%Y-%m-%d %H:%M")
+            if pd.isna(v) or str(v).strip().lower() in ("", "nan", "none", "nat", "—")
+            else str(v)[:16]
+        )
     merged = pd.concat([static_df[CSV_COLUMNS], new_df[CSV_COLUMNS]], ignore_index=True)
     return merged
 
@@ -369,6 +393,46 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
                 _mark_all_merged()
                 st.warning(t(f"🗑 {n_pending} pending scans discarded — dataset unchanged.", f"🗑 تم تجاهل {n_pending} فحصاً — البيانات لم تتغير."))
                 st.rerun()
+
+    # ═══════════════════════════════════════════════════════
+    # SECTION 2b — FIX EXISTING TIMESTAMPS
+    # ═══════════════════════════════════════════════════════
+    st.markdown("<hr style='border:1px solid #2e3a50;margin:32px 0;'>", unsafe_allow_html=True)
+    section("FIX MISSING TIMESTAMPS IN DATASET", "إصلاح التواريخ المفقودة في البيانات")
+    st.markdown(
+        f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;'
+        f'padding:12px 18px;margin-bottom:16px;font-size:0.85rem;color:{TXT_M};">'
+        f'🔧 {t("If your dataset has rows with missing timestamps (— or empty), click below to auto-fill them with the current time and re-upload.",  "إذا كانت هناك صفوف بدون تاريخ، انقر أدناه لملء التواريخ تلقائياً وإعادة الرفع.")}'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    if st.button(t("🔧 Fix All Missing Timestamps Now", "🔧 إصلاح جميع التواريخ المفقودة الآن"), use_container_width=True, key="btn_fix_ts"):
+        with st.spinner(t("Loading and fixing dataset...", "جاري تحميل وإصلاح البيانات...")):
+            fix_df = load_static_dataset()
+            if fix_df.empty:
+                st.warning(t("No dataset found to fix.", "لا توجد بيانات للإصلاح."))
+            else:
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                fixed_count = 0
+                if "timestamp" in fix_df.columns:
+                    mask = fix_df["timestamp"].isna()
+                    fixed_count = int(mask.sum())
+                    fix_df.loc[mask, "timestamp"] = now_str
+                    if "date" in fix_df.columns:
+                        fix_df.loc[mask, "date"] = now_str[:10]
+                    if "hour" in fix_df.columns:
+                        fix_df.loc[mask, "hour"] = datetime.now().hour
+                # Convert timestamp back to string for CSV storage
+                fix_df["timestamp"] = fix_df["timestamp"].apply(
+                    lambda v: str(v)[:16] if not pd.isna(v) else now_str
+                )
+                success = _save_csv_to_storage(fix_df)
+                if success:
+                    load_static_dataset.clear()
+                    st.success(t(f"✅ Fixed {fixed_count} rows with missing timestamps!", f"✅ تم إصلاح {fixed_count} صف بتواريخ مفقودة!"))
+                    st.rerun()
+                else:
+                    st.error(t("Upload failed.", "فشل الرفع."))
 
     # ═══════════════════════════════════════════════════════
     # SECTION 3 — MANUAL CSV UPLOAD
