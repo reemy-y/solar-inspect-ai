@@ -1,4 +1,3 @@
-
 # ─────────────────────────────────────────────────────────────────────
 # 1. IMPORTS & PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────
@@ -23,7 +22,7 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────
 import secrets as _secrets
 
-DATABASE_URL = os.environ.get("DATABASE_URL")   # set on Render
+DATABASE_URL = os.environ.get("DATABASE_URL")   
 ADMIN_EMAIL  = "reemya185@gmail.com"
 TOKEN_KEY    = "solar_session_token"
 
