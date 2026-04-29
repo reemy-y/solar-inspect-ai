@@ -582,11 +582,8 @@ with col_ctrl:
 if not is_logged_in and st.session_state.get("_show_login", False):
     with st.container():
         st.markdown(f"""
-        <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:12px;
-             padding:24px;max-width:420px;margin:0 auto 24px auto;">
-            <div style="font-size:1.2rem;font-weight:800;margin-bottom:16px;text-align:center;">
-                ☀️ {t('Welcome to SolarInspect AI','مرحباً بك في SolarInspect AI')}
-            </div>
+        <div style="text-align:center;margin:8px 0 16px 0;">
+            <span style="font-size:2rem;">☀️</span>
         </div>
         """, unsafe_allow_html=True)
         _, mc, _ = st.columns([1, 2, 1])
@@ -1016,14 +1013,11 @@ with tab1:
             if not is_logged_in:
                 st.markdown(
                     f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:8px;'
-                    f'padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:16px;">'
+                    f'padding:14px 18px;display:flex;align-items:center;gap:16px;">'
                     f'<span style="color:{TXT_M};font-size:0.88rem;">🔒 {t("Log in to generate and download your PDF report.","سجّل دخولك لإنشاء تقرير PDF وتحميله.")}</span>'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
-                if st.button(f"🔑 {t('Log in to download report','سجّل دخولك لتحميل التقرير')}", key="btn_login_pdf"):
-                    st.session_state._show_login = True
-                    st.rerun()
             else:
                 if st.button(t("📄 Generate PDF Report","📄 إنشاء تقرير PDF"), key="gen_pdf"):
                     with st.spinner(t("Generating report...","جاري إنشاء التقرير...")):
