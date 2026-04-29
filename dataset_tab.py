@@ -188,6 +188,12 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
             v = row.get(col)
             if v is None or (isinstance(v, float) and pd.isna(v)):
                 return medians.get(col, "")
+            # Treat 0 as "not entered" for sensor fields
+            try:
+                if float(v) == 0.0 and col in medians:
+                    return medians.get(col, "")
+            except Exception:
+                pass
             return v
 
         new_rows.append({
