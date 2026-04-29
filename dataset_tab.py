@@ -145,11 +145,15 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
     for _, row in pending_df.iterrows():
         ts = row["scanned_at"]
         try:
-            ts = pd.to_datetime(ts, utc=True).tz_convert(None)
+            ts = pd.to_datetime(ts, utc=True).tz_convert("Africa/Cairo").tz_localize(None)
             if pd.isna(ts):
-                ts = datetime.now()
+                raise ValueError
         except Exception:
-            ts = datetime.now()
+            try:
+                from datetime import timedelta
+                ts = datetime.utcnow() + timedelta(hours=2)
+            except Exception:
+                ts = datetime.now()
 
         ts_str = ts.strftime("%Y-%m-%d %H:%M")
         conf   = float(row["confidence"])
@@ -302,24 +306,51 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         sel_u  = st.selectbox(t("Filter by user", "تصفية حسب المستخدم"), users, key="dst_user")
         freal  = real if sel_u in ("All Users", "جميع المستخدمين") else real[real["panel_id"] == sel_u]
 
-        show_cols = [c for c in ["timestamp", "panel_id", "defect_type", "confidence", "severity"] if c in freal.columns]
-        disp = freal[show_cols].copy()
-        # Clean NaN timestamps
+        # All columns — horizontal scroll via st.dataframe with wide layout
+        all_show_cols = [c for c in [
+            "timestamp", "panel_id", "defect_type", "severity", "confidence",
+            "irradiation", "ambient_temp_c", "module_temp_c",
+            "dc_power_kw", "ac_power_kw", "efficiency_pct",
+            "panel_capacity_kw", "panel_age_years",
+        ] if c in freal.columns]
+
+        disp = freal[all_show_cols].copy()
+
+        # Clean timestamps
         if "timestamp" in disp.columns:
             disp["timestamp"] = disp["timestamp"].apply(
                 lambda v: "—" if pd.isna(v) or str(v).strip().lower() in ("nan","none","nat","") else str(v)[:16]
             )
-        disp = disp.rename(columns={
-            "panel_id":    t("user_email", "البريد"),
-            "defect_type": t("defect", "العيب"),
-            "confidence":  t("confidence", "الثقة"),
-            "severity":    t("severity", "الخطورة"),
-            "timestamp":   t("timestamp", "التوقيت"),
-        }).sort_values(t("timestamp", "التوقيت"), ascending=False)
-        st.dataframe(disp, use_container_width=True, hide_index=True)
+
+        # Rename columns to friendly labels
+        rename_map = {
+            "timestamp":         t("Time",        "الوقت"),
+            "panel_id":          t("User",         "المستخدم"),
+            "defect_type":       t("Defect",       "العيب"),
+            "severity":          t("Severity",     "الخطورة"),
+            "confidence":        t("Conf %",       "الثقة %"),
+            "irradiation":       t("Irrad.",       "إشعاع"),
+            "ambient_temp_c":    t("Amb °C",       "حرارة محيط"),
+            "module_temp_c":     t("Mod °C",       "حرارة لوح"),
+            "dc_power_kw":       t("DC kW",        "DC kW"),
+            "ac_power_kw":       t("AC kW",        "AC kW"),
+            "efficiency_pct":    t("Eff %",        "كفاءة %"),
+            "panel_capacity_kw": t("Cap kW",       "سعة kW"),
+            "panel_age_years":   t("Age (yr)",     "العمر"),
+        }
+        disp = disp.rename(columns=rename_map).sort_values(t("Time","الوقت"), ascending=False)
+
+        # Use st.dataframe with column_config for better display + horizontal scroll
+        st.dataframe(
+            disp,
+            use_container_width=True,
+            hide_index=True,
+            height=400,
+        )
         st.caption(t(f"{len(disp)} records shown", f"{len(disp)} سجل"))
 
-        csv_bytes = freal[show_cols].to_csv(index=False).encode("utf-8")
+        show_cols = [c for c in ["timestamp","panel_id","defect_type","confidence","severity"] if c in freal.columns]
+        csv_bytes = freal[all_show_cols].to_csv(index=False).encode("utf-8")
         st.download_button(
             label=t("⬇️ Download Approved Dataset CSV", "⬇️ تحميل CSV"),
             data=csv_bytes,
@@ -351,15 +382,25 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             st.markdown(
                 f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;'
                 f'padding:10px 16px;margin-bottom:16px;font-size:0.82rem;color:{TXT_M};">'
-                f'📡 {t("Line charts for sensor readings submitted by users with their scans. Only parameters with data are shown.","مخططات خطية لقراءات المستشعر التي أرسلها المستخدمون. تُعرض المعاملات التي تحتوي على بيانات فقط.")}'
+                f'📡 {t("Smoothed trends (rolling average per 50 scans). Only parameters with data are shown.","اتجاهات مسحّوبة (متوسط متحرك لكل 50 فحص). تُعرض المعاملات التي تحتوي على بيانات فقط.")}'
                 f'</div>',
                 unsafe_allow_html=True,
             )
             chart_df = real.copy()
             chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp"], errors="coerce")
-            chart_df = chart_df.dropna(subset=["timestamp"]).sort_values("timestamp")
+            chart_df = chart_df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
 
-            # Show 2 charts per row
+            FILL_COLORS = {
+                "#f5a623": "rgba(245,166,35,0.08)",
+                "#3498db": "rgba(52,152,219,0.08)",
+                "#e74c3c": "rgba(231,76,60,0.08)",
+                "#2ecc71": "rgba(46,204,113,0.08)",
+                "#9b59b6": "rgba(155,89,182,0.08)",
+                "#1abc9c": "rgba(26,188,156,0.08)",
+                "#e67e22": "rgba(230,126,34,0.08)",
+                "#95a5a6": "rgba(149,165,166,0.08)",
+            }
+
             for i in range(0, len(available), 2):
                 chunk = available[i:i+2]
                 cols  = st.columns(len(chunk))
@@ -367,29 +408,28 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
                     with cols[j]:
                         col_data = chart_df[["timestamp", col]].copy()
                         col_data[col] = pd.to_numeric(col_data[col], errors="coerce")
-                        col_data = col_data.dropna(subset=[col])
+                        col_data = col_data.dropna(subset=[col]).reset_index(drop=True)
                         if col_data.empty:
                             continue
-                        FILL_COLORS = {
-                            "#f5a623": "rgba(245,166,35,0.08)",
-                            "#3498db": "rgba(52,152,219,0.08)",
-                            "#e74c3c": "rgba(231,76,60,0.08)",
-                            "#2ecc71": "rgba(46,204,113,0.08)",
-                            "#9b59b6": "rgba(155,89,182,0.08)",
-                            "#1abc9c": "rgba(26,188,156,0.08)",
-                            "#e67e22": "rgba(230,126,34,0.08)",
-                            "#95a5a6": "rgba(149,165,166,0.08)",
-                        }
+                        # Rolling mean — window=50 or length of data whichever is smaller
+                        window = min(50, max(1, len(col_data) // 5))
+                        col_data["smoothed"] = col_data[col].rolling(window=window, min_periods=1, center=True).mean()
+
                         fig = go.Figure()
+                        # Raw data faint line
                         fig.add_trace(go.Scatter(
-                            x=col_data["timestamp"],
-                            y=col_data[col],
-                            mode="lines+markers",
-                            line=dict(color=color, width=2),
-                            marker=dict(size=5, color=color),
+                            x=col_data["timestamp"], y=col_data[col],
+                            mode="lines", name=t("Raw","خام"),
+                            line=dict(color=color, width=1, dash="dot"),
+                            opacity=0.3,
+                        ))
+                        # Smoothed line prominent
+                        fig.add_trace(go.Scatter(
+                            x=col_data["timestamp"], y=col_data["smoothed"],
+                            mode="lines", name=t("Avg","متوسط"),
+                            line=dict(color=color, width=2.5),
                             fill="tozeroy",
                             fillcolor=FILL_COLORS.get(color, "rgba(245,166,35,0.08)"),
-                            name=label,
                         ))
                         fig.update_layout(
                             title=dict(text=label, font=dict(color=TXT, size=13)),
