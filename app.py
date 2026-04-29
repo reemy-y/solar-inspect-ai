@@ -934,8 +934,7 @@ with tab1:
             sev        = info["severity"]
 
             import hashlib as _hl
-            file_hash    = _hl.md5(uploaded.getvalue()).hexdigest()
-            _is_new_scan = is_logged_in and file_hash not in st.session_state.saved_hashes
+            file_hash = _hl.md5(uploaded.getvalue()).hexdigest()
 
             col_img, col_res = st.columns([3,2], gap="large")
             with col_img:
@@ -964,13 +963,16 @@ with tab1:
 
             # ── SENSOR PARAMETERS — always visible, only saved if logged in
             st.markdown(f'<div class="section-title">{t("PANEL SENSOR PARAMETERS — OPTIONAL","معطيات المستشعر — اختياري")}</div>', unsafe_allow_html=True)
-            st.markdown(f"""<div class="perf-card" style="margin-bottom:12px;">
-                <div style="font-size:0.82rem;color:{TXT_M};">
-                    📡 {t('Fill in any sensor readings you have. All fields are optional — leave at 0 to skip.',
-                           'أدخل أي قراءات متوفرة. جميع الحقول اختيارية — اترك 0 للتخطي.')}
-                    {'' if is_logged_in else f' <b style="color:#f5a623;">{t("Log in to save these readings to your history.","سجّل دخولك لحفظ هذه القراءات في سجلك.")}</b>'}
-                </div>
-            </div>""", unsafe_allow_html=True)
+
+            hint_extra = "" if is_logged_in else f' <b style="color:#f5a623;">{t("Log in to save this scan to your history.","سجّل دخولك لحفظ هذا الفحص في سجلك.")}</b>'
+            st.markdown(
+                f'<div class="perf-card" style="margin-bottom:12px;">'
+                f'<div style="font-size:0.82rem;color:{TXT_M};">'
+                f'📡 {t("Fill in any sensor readings you have. All fields are optional — leave at 0 to skip.", "أدخل أي قراءات متوفرة. جميع الحقول اختيارية — اترك 0 للتخطي.")}'
+                f'{hint_extra}'
+                f'</div></div>',
+                unsafe_allow_html=True,
+            )
 
             sp1, sp2, sp3, sp4 = st.columns(4)
             with sp1: s_irr = st.number_input(t("Irradiation (W/m²/1000)","الإشعاع"), min_value=0.0, max_value=2.0,     value=0.0, step=0.01, key="s_irr", format="%.3f")
@@ -983,17 +985,46 @@ with tab1:
             with sp7: s_cap = st.number_input(t("Panel Capacity (kW)","سعة اللوح"),   min_value=0.0, max_value=1000.0,  value=0.0, step=0.1,  key="s_cap", format="%.2f")
             with sp8: s_age = st.number_input(t("Panel Age (years)","عمر اللوح"),     min_value=0,   max_value=50,      value=0,   step=1,    key="s_age")
 
-            # Save to DB only if logged in
-            if _is_new_scan:
-                db_save_scan(
-                    st.session_state.auth_email, pred_class, info, confidence,
-                    irradiation=s_irr if s_irr>0 else None, ambient_temp=s_amb if s_amb>0 else None,
-                    module_temp=s_mod if s_mod>0 else None, dc_power=s_dc if s_dc>0 else None,
-                    ac_power=s_ac if s_ac>0 else None, efficiency_pct=s_eff if s_eff>0 else None,
-                    panel_capacity=s_cap if s_cap>0 else None, panel_age=s_age if s_age>0 else None,
+            # ── SAVE SCAN BUTTON — explicit, user-triggered
+            st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+            if is_logged_in:
+                already_saved = file_hash in st.session_state.saved_hashes
+                if already_saved:
+                    st.markdown(
+                        f'<div style="background:#1a3a1a;border:1px solid #2ecc71;border-radius:8px;'
+                        f'padding:12px 18px;font-size:0.88rem;color:#2ecc71;font-weight:600;">'
+                        f'✅ {t("Scan already saved to your history.","تم حفظ الفحص في سجلك مسبقاً.")}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    if st.button(
+                        f"💾 {t('Save Scan to History','حفظ الفحص في السجل')}",
+                        key="btn_save_scan",
+                        use_container_width=True,
+                    ):
+                        db_save_scan(
+                            st.session_state.auth_email, pred_class, info, confidence,
+                            irradiation=s_irr if s_irr > 0 else None,
+                            ambient_temp=s_amb if s_amb > 0 else None,
+                            module_temp=s_mod if s_mod > 0 else None,
+                            dc_power=s_dc if s_dc > 0 else None,
+                            ac_power=s_ac if s_ac > 0 else None,
+                            efficiency_pct=s_eff if s_eff > 0 else None,
+                            panel_capacity=s_cap if s_cap > 0 else None,
+                            panel_age=s_age if s_age > 0 else None,
+                        )
+                        st.session_state.saved_hashes.add(file_hash)
+                        st.toast(t("✅ Scan saved to your history", "✅ تم حفظ الفحص في سجلك"), icon="✅")
+                        st.rerun()
+            else:
+                st.markdown(
+                    f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:8px;'
+                    f'padding:12px 18px;font-size:0.88rem;color:{TXT_M};">'
+                    f'🔒 {t("Log in to save this scan to your history.","سجّل دخولك لحفظ هذا الفحص في سجلك.")}'
+                    f'</div>',
+                    unsafe_allow_html=True,
                 )
-                st.session_state.saved_hashes.add(file_hash)
-                st.toast(t("✅ Scan saved to your history","✅ تم حفظ الفحص في سجلك"), icon="✅")
 
             # ── MAINTENANCE TIPS
             st.markdown(f'<div class="section-title">{t("MAINTENANCE TIPS","نصائح الصيانة")}</div>', unsafe_allow_html=True)
