@@ -143,7 +143,10 @@ def auth_login(email: str, password: str):
 
 def db_save_scan(email, pred_class, info, confidence,
                  irradiation=None, ambient_temp=None, module_temp=None,
-                 dc_power=None, ac_power=None, efficiency_pct=None):
+                 dc_power=None, ac_power=None, efficiency_pct=None,
+                 panel_capacity=None, panel_age=None):
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
     conn = _db()
     try:
         with conn.cursor() as cur:
@@ -158,12 +161,18 @@ def db_save_scan(email, pred_class, info, confidence,
                 cur.execute("""
                     INSERT INTO scans
                       (email, scanned_at, defect_type, display_en, display_ar,
-                       confidence, severity, icon, merged_into_dataset)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, FALSE)
+                       confidence, severity, icon, merged_into_dataset,
+                       irradiation, ambient_temp_c, module_temp_c,
+                       dc_power_kw, ac_power_kw, efficiency_pct,
+                       panel_capacity_kw, panel_age_years)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,FALSE,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (
-                    email, datetime.now(), pred_class,
+                    email, now, pred_class,
                     info["display_en"], info["display_ar"],
                     round(confidence, 4), info["severity"], info["icon"],
+                    irradiation, ambient_temp, module_temp,
+                    dc_power, ac_power, efficiency_pct,
+                    panel_capacity, panel_age,
                 ))
             conn.commit()
     finally:
@@ -966,9 +975,6 @@ with tab1:
             import hashlib as _hl
             file_hash = _hl.md5(uploaded.getvalue()).hexdigest()
             _is_new_scan = file_hash not in st.session_state.saved_hashes
-            if _is_new_scan:
-                db_save_scan(st.session_state.auth_email, pred_class, info, confidence)
-                st.session_state.saved_hashes.add(file_hash)
 
             col_img, col_res = st.columns([3,2], gap="large")
             with col_img:
@@ -1039,6 +1045,22 @@ with tab1:
                 s_age = st.number_input(t("Panel Age (years)","عمر اللوح"),
                     min_value=0, max_value=50, value=0, step=1, key="s_age",
                     help=t("Years since installation","سنوات منذ التركيب"))
+
+            # ── Save to DB now that we have all sensor values
+            if _is_new_scan:
+                db_save_scan(
+                    st.session_state.auth_email, pred_class, info, confidence,
+                    irradiation     = s_irr if s_irr > 0 else None,
+                    ambient_temp    = s_amb if s_amb > 0 else None,
+                    module_temp     = s_mod if s_mod > 0 else None,
+                    dc_power        = s_dc  if s_dc  > 0 else None,
+                    ac_power        = s_ac  if s_ac  > 0 else None,
+                    efficiency_pct  = s_eff if s_eff > 0 else None,
+                    panel_capacity  = s_cap if s_cap > 0 else None,
+                    panel_age       = s_age if s_age > 0 else None,
+                )
+                st.session_state.saved_hashes.add(file_hash)
+                st.toast(t("✅ Scan saved to database","✅ تم حفظ الفحص في قاعدة البيانات"), icon="✅")
 
             st.markdown(f'<div class="section-title">{t("MAINTENANCE TIPS","نصائح الصيانة")}</div>', unsafe_allow_html=True)
             tips = info["tips_ar"] if IS_AR else info["tips_en"]
