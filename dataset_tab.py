@@ -370,6 +370,16 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
                         col_data = col_data.dropna(subset=[col])
                         if col_data.empty:
                             continue
+                        FILL_COLORS = {
+                            "#f5a623": "rgba(245,166,35,0.08)",
+                            "#3498db": "rgba(52,152,219,0.08)",
+                            "#e74c3c": "rgba(231,76,60,0.08)",
+                            "#2ecc71": "rgba(46,204,113,0.08)",
+                            "#9b59b6": "rgba(155,89,182,0.08)",
+                            "#1abc9c": "rgba(26,188,156,0.08)",
+                            "#e67e22": "rgba(230,126,34,0.08)",
+                            "#95a5a6": "rgba(149,165,166,0.08)",
+                        }
                         fig = go.Figure()
                         fig.add_trace(go.Scatter(
                             x=col_data["timestamp"],
@@ -378,7 +388,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
                             line=dict(color=color, width=2),
                             marker=dict(size=5, color=color),
                             fill="tozeroy",
-                            fillcolor=color.replace("#", "rgba(") + ",0.08)" if color.startswith("#") else color,
+                            fillcolor=FILL_COLORS.get(color, "rgba(245,166,35,0.08)"),
                             name=label,
                         ))
                         fig.update_layout(
