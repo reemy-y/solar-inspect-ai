@@ -208,13 +208,28 @@ def db_get_scans(email: str, admin: bool = False) -> list:
     finally:
         conn.close()
 
-    def _fmt_time(val):
+     def _fmt_time(val):
         if val is None:
             return "—"
         if hasattr(val, "strftime"):
             return val.strftime("%Y-%m-%d %H:%M")
         s = str(val)
         return s[:16] if len(s) >= 16 else s
+
+    return [
+        {
+            "email":      row["email"],
+            "time":       _fmt_time(row["scanned_at"]),
+            "class":      row["defect_type"],
+            "display_en": row["display_en"],
+            "display_ar": row["display_ar"],
+            "confidence": float(row["confidence"]) if row["confidence"] is not None else 0.0,
+            "severity":   row["severity"],
+            "icon":       row["icon"],
+            "source":     "db",
+        }
+        for row in rows
+    ]
 
     def _norm_conf(val):
         """Confidence in DB is stored 0–1 (e.g. 0.9956). Return as fraction for display."""
@@ -334,7 +349,8 @@ def get_full_history(email: str, admin: bool = False) -> list:
     # Deduplicate: DB scans take priority, skip CSV entries already in DB
     seen = set()
     for h in db_scans:
-        seen.add((h["email"], h["class"], h["time"][:13]))  # match to hour precision
+        t = h["time"] if len(h["time"]) >= 13 else h["time"]
+        seen.add((h["email"], h["class"], t[:13]))
     combined = list(db_scans)
     for h in csv_scans:
         key = (h["email"], h["class"], h["time"][:13])
