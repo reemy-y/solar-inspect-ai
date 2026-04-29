@@ -32,6 +32,7 @@ CSV_COLUMNS = [
     "irradiation", "ambient_temp_c", "module_temp_c",
     "dc_power_kw", "ac_power_kw", "defect_type", "efficiency_pct",
     "confidence", "severity", "source",
+    "panel_capacity_kw", "panel_age_years",
 ]
 
 # ─────────────────────────────────────────────────────────────────────
@@ -111,7 +112,10 @@ def _get_pending_scans() -> pd.DataFrame:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT id, email, scanned_at, defect_type, display_en, display_ar,
-                       confidence, severity, icon
+                       confidence, severity, icon,
+                       irradiation, ambient_temp_c, module_temp_c,
+                       dc_power_kw, ac_power_kw, efficiency_pct,
+                       panel_capacity_kw, panel_age_years
                 FROM scans
                 WHERE merged_into_dataset = FALSE
                 ORDER BY scanned_at DESC
@@ -140,11 +144,8 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
     new_rows = []
     for _, row in pending_df.iterrows():
         ts = row["scanned_at"]
-        # Always ensure a real timestamp — fallback to now if null/NaT
         try:
-            if ts is None or (hasattr(ts, '__class__') and str(ts) in ("NaT", "None", "")):
-                ts = datetime.now()
-            ts = pd.to_datetime(ts)
+            ts = pd.to_datetime(ts, utc=True).tz_convert(None)
             if pd.isna(ts):
                 ts = datetime.now()
         except Exception:
@@ -152,27 +153,36 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
 
         ts_str = ts.strftime("%Y-%m-%d %H:%M")
         conf   = float(row["confidence"])
+
+        def _safe(col):
+            v = row.get(col)
+            return "" if v is None or (isinstance(v, float) and pd.isna(v)) else v
+
         new_rows.append({
-            "timestamp":      ts_str,
-            "date":           ts.strftime("%Y-%m-%d"),
-            "hour":           ts.hour,
-            "panel_id":       row["email"],
-            "irradiation":    "",
-            "ambient_temp_c": "",
-            "module_temp_c":  "",
-            "dc_power_kw":    "",
-            "ac_power_kw":    "",
-            "defect_type":    row["defect_type"],
-            "efficiency_pct": "",
-            "confidence":     round(conf * 100, 1) if conf <= 1.0 else round(conf, 1),
-            "severity":       row["severity"],
-            "source":         "scan",
+            "timestamp":         ts_str,
+            "date":              ts.strftime("%Y-%m-%d"),
+            "hour":              ts.hour,
+            "panel_id":          row["email"],
+            "irradiation":       _safe("irradiation"),
+            "ambient_temp_c":    _safe("ambient_temp_c"),
+            "module_temp_c":     _safe("module_temp_c"),
+            "dc_power_kw":       _safe("dc_power_kw"),
+            "ac_power_kw":       _safe("ac_power_kw"),
+            "defect_type":       row["defect_type"],
+            "efficiency_pct":    _safe("efficiency_pct"),
+            "confidence":        round(conf * 100, 1) if conf <= 1.0 else round(conf, 1),
+            "severity":          row["severity"],
+            "source":            "scan",
+            "panel_capacity_kw": _safe("panel_capacity_kw"),
+            "panel_age_years":   _safe("panel_age_years"),
         })
     new_df = pd.DataFrame(new_rows)
     for col in CSV_COLUMNS:
         if col not in static_df.columns:
             static_df[col] = ""
-    # Also fix any existing — or NaN timestamps in the static dataset
+        if col not in new_df.columns:
+            new_df[col] = ""
+    # Repair any bad timestamps in existing static data
     if "timestamp" in static_df.columns:
         static_df["timestamp"] = static_df["timestamp"].apply(
             lambda v: datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -317,6 +327,81 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             mime="text/csv",
             key="dst_dl",
         )
+
+        # ── SENSOR PARAMETER LINE CHARTS
+        SENSOR_PARAMS = [
+            ("irradiation",       t("Irradiation (W/m²/1000)", "الإشعاع الشمسي"),          "#f5a623"),
+            ("ambient_temp_c",    t("Ambient Temp (°C)",        "حرارة المحيط"),             "#3498db"),
+            ("module_temp_c",     t("Module Temp (°C)",         "حرارة اللوح"),              "#e74c3c"),
+            ("dc_power_kw",       t("DC Power (kW)",            "طاقة DC"),                  "#2ecc71"),
+            ("ac_power_kw",       t("AC Power (kW)",            "طاقة AC"),                  "#9b59b6"),
+            ("efficiency_pct",    t("Efficiency (%)",           "الكفاءة %"),                "#1abc9c"),
+            ("panel_capacity_kw", t("Panel Capacity (kW)",      "سعة اللوح"),                "#e67e22"),
+            ("panel_age_years",   t("Panel Age (years)",        "عمر اللوح"),                "#95a5a6"),
+        ]
+
+        # Only show charts for columns that have at least some data
+        available = [
+            (col, label, color) for col, label, color in SENSOR_PARAMS
+            if col in real.columns and real[col].replace("", float("nan")).dropna().shape[0] > 0
+        ]
+
+        if available:
+            section("SENSOR PARAMETER TRENDS", "اتجاهات معاملات المستشعر")
+            st.markdown(
+                f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;'
+                f'padding:10px 16px;margin-bottom:16px;font-size:0.82rem;color:{TXT_M};">'
+                f'📡 {t("Line charts for sensor readings submitted by users with their scans. Only parameters with data are shown.","مخططات خطية لقراءات المستشعر التي أرسلها المستخدمون. تُعرض المعاملات التي تحتوي على بيانات فقط.")}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            chart_df = real.copy()
+            chart_df["timestamp"] = pd.to_datetime(chart_df["timestamp"], errors="coerce")
+            chart_df = chart_df.dropna(subset=["timestamp"]).sort_values("timestamp")
+
+            # Show 2 charts per row
+            for i in range(0, len(available), 2):
+                chunk = available[i:i+2]
+                cols  = st.columns(len(chunk))
+                for j, (col, label, color) in enumerate(chunk):
+                    with cols[j]:
+                        col_data = chart_df[["timestamp", col]].copy()
+                        col_data[col] = pd.to_numeric(col_data[col], errors="coerce")
+                        col_data = col_data.dropna(subset=[col])
+                        if col_data.empty:
+                            continue
+                        fig = go.Figure()
+                        fig.add_trace(go.Scatter(
+                            x=col_data["timestamp"],
+                            y=col_data[col],
+                            mode="lines+markers",
+                            line=dict(color=color, width=2),
+                            marker=dict(size=5, color=color),
+                            fill="tozeroy",
+                            fillcolor=color.replace("#", "rgba(") + ",0.08)" if color.startswith("#") else color,
+                            name=label,
+                        ))
+                        fig.update_layout(
+                            title=dict(text=label, font=dict(color=TXT, size=13)),
+                            height=220,
+                            paper_bgcolor=BG_CARD,
+                            plot_bgcolor=BG_CARD,
+                            font=dict(color=TXT_M, size=11),
+                            xaxis=dict(gridcolor=BORDER, color=TXT_M, showticklabels=True),
+                            yaxis=dict(gridcolor=BORDER, color=TXT_M),
+                            margin=dict(l=10, r=10, t=36, b=20),
+                            showlegend=False,
+                        )
+                        st.plotly_chart(fig, use_container_width=True, key=f"chart_{col}")
+        else:
+            section("SENSOR PARAMETER TRENDS", "اتجاهات معاملات المستشعر")
+            st.markdown(
+                f'<div style="text-align:center;color:{TXT_M};padding:20px;background:{BG_CARD};'
+                f'border:1px solid {BORDER};border-radius:10px;">'
+                f'📡 {t("No sensor data yet. Users can enter sensor readings when scanning panels — the charts will appear here once data is available.","لا توجد بيانات مستشعر بعد. يمكن للمستخدمين إدخال قراءات المستشعر عند الفحص.")}'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
 
     # ═══════════════════════════════════════════════════════
     # SECTION 2 — ADMIN MERGE PANEL
