@@ -318,6 +318,7 @@ def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
                 conf = 0.0
             ts_raw = row.get("timestamp", "")
             # Guard against NaN/None/empty
+            # OLD
             try:
                 if pd.isna(ts_raw) or str(ts_raw).strip().lower() in ("", "nan", "none", "nat"):
                     ts_str = "—"
@@ -325,6 +326,15 @@ def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
                     ts_str = str(ts_raw)[:16]
             except Exception:
                 ts_str = "—"
+
+# NEW
+            try:
+                if pd.isna(ts_raw) or str(ts_raw).strip().lower() in ("", "nan", "none", "nat"):
+                    continue  # skip this row entirely — DB version will show it
+                else:
+                    ts_str = str(ts_raw)[:16]
+            except Exception:
+                continue  # skip rows with unparseable timestamps
             results.append({
                 "email":      str(row.get("panel_id", "")),
                 "time":       ts_str,
