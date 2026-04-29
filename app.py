@@ -552,9 +552,8 @@ with col_ctrl:
                 <div class="avatar">{user_initial}</div>
                 <span class="email">{short_email}{admin_tag}</span>
             </div>
-            <div style="display:flex;gap:8px;">
+        </div>
         """, unsafe_allow_html=True)
-
         bc1, bc2 = st.columns(2)
         with bc1:
             if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
@@ -570,15 +569,11 @@ with col_ctrl:
                 st.session_state.history       = []
                 st.rerun()
     else:
-        st.markdown(f'<div style="padding-top:18px;display:flex;justify-content:flex-end;gap:8px;">', unsafe_allow_html=True)
-        bc1, bc2 = st.columns(2)
+        # Guest — only language toggle in header
+        _, bc1 = st.columns([1, 1])
         with bc1:
             if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
                 st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
-                st.rerun()
-        with bc2:
-            if st.button("🔑 Log In", use_container_width=True, key="btn_login_top"):
-                st.session_state._show_login = True
                 st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────
@@ -625,17 +620,22 @@ if not is_logged_in and st.session_state.get("_show_login", False):
                             st.success(msg2) if ok2 else st.error(msg2)
 
 # ─────────────────────────────────────────────────────────────────────
-# 7. GUEST BANNER — shown on all tabs when not logged in
+# 7. GUEST BANNER — one clean bar with single login button
 # ─────────────────────────────────────────────────────────────────────
 if not is_logged_in:
-    st.markdown(f"""
-    <div class="login-banner">
-        <div style="font-size:0.9rem;color:{TXT_M};">
-            👁️ {t('You are browsing as a guest. Log in to scan panels, save history and export reports.',
-                   'أنت تتصفح كضيف. سجّل دخولك لفحص الألواح وحفظ السجل وتصدير التقارير.')}
+    gb1, gb2 = st.columns([5, 1])
+    with gb1:
+        st.markdown(f"""
+        <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;
+             padding:12px 20px;font-size:0.88rem;color:{TXT_M};">
+            👁️ {t('Browsing as guest — scan and forecast work freely. Log in to save history and download reports.',
+                   'تتصفح كضيف — الفحص والتوقع يعملان بحرية. سجّل دخولك لحفظ السجل وتحميل التقارير.')}
         </div>
-    </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
+    with gb2:
+        if st.button(f"🔑 {t('Log In','دخول')}", use_container_width=True, key="btn_login_banner"):
+            st.session_state._show_login = True
+            st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────
 # 8. DATA — defect info, model loaders
@@ -911,39 +911,7 @@ else:
 # TAB 1 — IMAGE SCAN
 # ═══════════════════════════════════════════════════════════════
 with tab1:
-    if not is_logged_in:
-        st.markdown(f"""
-        <div class="upload-zone">
-            <div style="font-size:3rem;margin-bottom:16px;">☀️</div>
-            <div style="font-size:1.1rem;font-weight:600;color:{TXT};margin-bottom:8px;">
-                {t('Upload a solar panel image to detect defects','ارفع صورة لوح شمسي للكشف عن العيوب')}
-            </div>
-            <div style="font-size:0.85rem;color:{TXT_M};margin-bottom:20px;">JPG · JPEG · PNG</div>
-        </div>""", unsafe_allow_html=True)
-
-        # Real clickable button that opens the login modal
-        _, bc, _ = st.columns([2, 1, 2])
-        with bc:
-            if st.button(f"🔑 {t('Log in to start scanning','سجّل دخولك للبدء')}", use_container_width=True, key="btn_login_scan"):
-                st.session_state._show_login = True
-                st.rerun()
-
-        # Show blurred preview panels
-        st.markdown(f"""<div class="perf-card" style="opacity:0.4;pointer-events:none;margin-top:16px;">
-            <div style="font-size:0.88rem;font-weight:700;color:{TXT};margin-bottom:8px;">
-                📡 {t('Panel Sensor Parameters (Optional)','معطيات المستشعر — اختياري')}
-            </div>
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
-                {''.join(f'<div style="background:{INPUT_BG};border:1px solid {BORDER};border-radius:8px;padding:12px;text-align:center;color:{TXT_M};font-size:0.8rem;">——</div>' for _ in range(8))}
-            </div>
-        </div>
-        <div style="margin-top:16px;background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;padding:24px;text-align:center;">
-            <div style="font-size:1.3rem;margin-bottom:8px;">🔒</div>
-            <div style="font-weight:700;color:{TXT};margin-bottom:4px;">{t('Results will appear here','النتائج ستظهر هنا')}</div>
-            <div style="font-size:0.85rem;color:{TXT_M};">{t('Log in to see defect analysis, severity, and maintenance tips.','سجّل دخولك لرؤية تحليل العيوب.')}</div>
-        </div>""", unsafe_allow_html=True)
-
-    elif effnet_model is None:
+    if effnet_model is None:
         st.error(t("Model file not found: best_efficientnet_b0.pth","ملف النموذج غير موجود."))
     else:
         uploaded = st.file_uploader(
@@ -973,10 +941,9 @@ with tab1:
             display    = info["display_ar"] if IS_AR else info["display_en"]
             sev        = info["severity"]
 
-            # ── Save scan on first view (sensor params optional, collected below)
             import hashlib as _hl
-            file_hash = _hl.md5(uploaded.getvalue()).hexdigest()
-            _is_new_scan = file_hash not in st.session_state.saved_hashes
+            file_hash    = _hl.md5(uploaded.getvalue()).hexdigest()
+            _is_new_scan = is_logged_in and file_hash not in st.session_state.saved_hashes
 
             col_img, col_res = st.columns([3,2], gap="large")
             with col_img:
@@ -1003,67 +970,40 @@ with tab1:
                     <div class="urgency-box">{urgency}</div>
                 </div>""", unsafe_allow_html=True)
 
-            # ── OPTIONAL SENSOR PARAMETERS — below image results, above tips
+            # ── SENSOR PARAMETERS — always visible, only saved if logged in
             st.markdown(f'<div class="section-title">{t("PANEL SENSOR PARAMETERS — OPTIONAL","معطيات المستشعر — اختياري")}</div>', unsafe_allow_html=True)
             st.markdown(f"""<div class="perf-card" style="margin-bottom:12px;">
                 <div style="font-size:0.82rem;color:{TXT_M};">
                     📡 {t('Fill in any sensor readings you have. All fields are optional — leave at 0 to skip.',
                            'أدخل أي قراءات متوفرة. جميع الحقول اختيارية — اترك 0 للتخطي.')}
+                    {'' if is_logged_in else f' <b style="color:#f5a623;">{t("Log in to save these readings to your history.","سجّل دخولك لحفظ هذه القراءات في سجلك.")}</b>'}
                 </div>
             </div>""", unsafe_allow_html=True)
 
             sp1, sp2, sp3, sp4 = st.columns(4)
-            with sp1:
-                s_irr = st.number_input(t("Irradiation (W/m²/1000)","الإشعاع"),
-                    min_value=0.0, max_value=2.0, value=0.0, step=0.01, key="s_irr", format="%.3f",
-                    help=t("Solar irradiance ÷ 1000. Range: 0.1–1.2","الإشعاع الشمسي مقسوماً على 1000"))
-            with sp2:
-                s_amb = st.number_input(t("Ambient Temp (°C)","حرارة المحيط"),
-                    min_value=-20.0, max_value=60.0, value=0.0, step=0.1, key="s_amb", format="%.1f",
-                    help=t("Outside air temperature","درجة حرارة الهواء الخارجي"))
-            with sp3:
-                s_mod = st.number_input(t("Module Temp (°C)","حرارة اللوح"),
-                    min_value=-20.0, max_value=90.0, value=0.0, step=0.1, key="s_mod", format="%.1f",
-                    help=t("Panel surface temperature","حرارة سطح اللوح"))
-            with sp4:
-                s_dc = st.number_input(t("DC Power (kW)","طاقة DC"),
-                    min_value=0.0, max_value=500000.0, value=0.0, step=0.1, key="s_dc", format="%.2f",
-                    help=t("DC output from panel","الطاقة المستمرة من اللوح"))
-
+            with sp1: s_irr = st.number_input(t("Irradiation (W/m²/1000)","الإشعاع"), min_value=0.0, max_value=2.0,     value=0.0, step=0.01, key="s_irr", format="%.3f")
+            with sp2: s_amb = st.number_input(t("Ambient Temp (°C)","حرارة المحيط"),  min_value=-20.0,max_value=60.0,   value=0.0, step=0.1,  key="s_amb", format="%.1f")
+            with sp3: s_mod = st.number_input(t("Module Temp (°C)","حرارة اللوح"),    min_value=-20.0,max_value=90.0,   value=0.0, step=0.1,  key="s_mod", format="%.1f")
+            with sp4: s_dc  = st.number_input(t("DC Power (kW)","طاقة DC"),           min_value=0.0, max_value=500000.0,value=0.0, step=0.1,  key="s_dc",  format="%.2f")
             sp5, sp6, sp7, sp8 = st.columns(4)
-            with sp5:
-                s_ac = st.number_input(t("AC Power (kW)","طاقة AC"),
-                    min_value=0.0, max_value=500000.0, value=0.0, step=0.1, key="s_ac", format="%.2f",
-                    help=t("AC output after inverter","الطاقة المتردد بعد العاكس"))
-            with sp6:
-                s_eff = st.number_input(t("Efficiency (%)","الكفاءة %"),
-                    min_value=0.0, max_value=100.0, value=0.0, step=0.1, key="s_eff", format="%.1f",
-                    help=t("Panel conversion efficiency","نسبة كفاءة التحويل"))
-            with sp7:
-                s_cap = st.number_input(t("Panel Capacity (kW)","سعة اللوح"),
-                    min_value=0.0, max_value=1000.0, value=0.0, step=0.1, key="s_cap", format="%.2f",
-                    help=t("Rated capacity of the panel","الطاقة الاسمية للوح"))
-            with sp8:
-                s_age = st.number_input(t("Panel Age (years)","عمر اللوح"),
-                    min_value=0, max_value=50, value=0, step=1, key="s_age",
-                    help=t("Years since installation","سنوات منذ التركيب"))
+            with sp5: s_ac  = st.number_input(t("AC Power (kW)","طاقة AC"),           min_value=0.0, max_value=500000.0,value=0.0, step=0.1,  key="s_ac",  format="%.2f")
+            with sp6: s_eff = st.number_input(t("Efficiency (%)","الكفاءة %"),        min_value=0.0, max_value=100.0,   value=0.0, step=0.1,  key="s_eff", format="%.1f")
+            with sp7: s_cap = st.number_input(t("Panel Capacity (kW)","سعة اللوح"),   min_value=0.0, max_value=1000.0,  value=0.0, step=0.1,  key="s_cap", format="%.2f")
+            with sp8: s_age = st.number_input(t("Panel Age (years)","عمر اللوح"),     min_value=0,   max_value=50,      value=0,   step=1,    key="s_age")
 
-            # ── Save to DB now that we have all sensor values
+            # Save to DB only if logged in
             if _is_new_scan:
                 db_save_scan(
                     st.session_state.auth_email, pred_class, info, confidence,
-                    irradiation     = s_irr if s_irr > 0 else None,
-                    ambient_temp    = s_amb if s_amb > 0 else None,
-                    module_temp     = s_mod if s_mod > 0 else None,
-                    dc_power        = s_dc  if s_dc  > 0 else None,
-                    ac_power        = s_ac  if s_ac  > 0 else None,
-                    efficiency_pct  = s_eff if s_eff > 0 else None,
-                    panel_capacity  = s_cap if s_cap > 0 else None,
-                    panel_age       = s_age if s_age > 0 else None,
+                    irradiation=s_irr if s_irr>0 else None, ambient_temp=s_amb if s_amb>0 else None,
+                    module_temp=s_mod if s_mod>0 else None, dc_power=s_dc if s_dc>0 else None,
+                    ac_power=s_ac if s_ac>0 else None, efficiency_pct=s_eff if s_eff>0 else None,
+                    panel_capacity=s_cap if s_cap>0 else None, panel_age=s_age if s_age>0 else None,
                 )
                 st.session_state.saved_hashes.add(file_hash)
-                st.toast(t("✅ Scan saved to database","✅ تم حفظ الفحص في قاعدة البيانات"), icon="✅")
+                st.toast(t("✅ Scan saved to your history","✅ تم حفظ الفحص في سجلك"), icon="✅")
 
+            # ── MAINTENANCE TIPS
             st.markdown(f'<div class="section-title">{t("MAINTENANCE TIPS","نصائح الصيانة")}</div>', unsafe_allow_html=True)
             tips = info["tips_ar"] if IS_AR else info["tips_en"]
             tip_cols = st.columns(len(tips))
@@ -1071,35 +1011,37 @@ with tab1:
                 with tip_cols[i]:
                     st.markdown(f'<div class="tip-card"><div style="font-size:1.2rem;margin-bottom:6px;">💡</div><div class="tip-text">{tip}</div></div>', unsafe_allow_html=True)
 
+            # ── PDF EXPORT — locked for guests
             st.markdown(f'<div class="section-title">{t("EXPORT REPORT","تصدير التقرير")}</div>', unsafe_allow_html=True)
-            if st.button(t("📄 Generate PDF Report","📄 إنشاء تقرير PDF"), key="gen_pdf"):
-                with st.spinner(t("Generating report...","جاري إنشاء التقرير...")):
-                    pdf_bytes = generate_pdf(pred_class, confidence, info,
-                        lang=st.session_state.lang, user_email=st.session_state.auth_email)
-                st.download_button(
-                    label=t("⬇️ Download Report","⬇️ تحميل التقرير"),
-                    data=pdf_bytes,
-                    file_name=f"solar_scan_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                    mime="application/pdf", key="dl_pdf",
+            if not is_logged_in:
+                st.markdown(
+                    f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:8px;'
+                    f'padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:16px;">'
+                    f'<span style="color:{TXT_M};font-size:0.88rem;">🔒 {t("Log in to generate and download your PDF report.","سجّل دخولك لإنشاء تقرير PDF وتحميله.")}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
                 )
+                if st.button(f"🔑 {t('Log in to download report','سجّل دخولك لتحميل التقرير')}", key="btn_login_pdf"):
+                    st.session_state._show_login = True
+                    st.rerun()
+            else:
+                if st.button(t("📄 Generate PDF Report","📄 إنشاء تقرير PDF"), key="gen_pdf"):
+                    with st.spinner(t("Generating report...","جاري إنشاء التقرير...")):
+                        pdf_bytes = generate_pdf(pred_class, confidence, info,
+                            lang=st.session_state.lang, user_email=st.session_state.auth_email)
+                    st.download_button(
+                        label=t("⬇️ Download Report","⬇️ تحميل التقرير"),
+                        data=pdf_bytes,
+                        file_name=f"solar_scan_{_now_cairo().strftime('%Y%m%d_%H%M')}.pdf",
+                        mime="application/pdf", key="dl_pdf",
+                    )
 
 # ═══════════════════════════════════════════════════════════════
 # TAB 2 — PERFORMANCE ANALYZER
 # ═══════════════════════════════════════════════════════════════
 with tab2:
     st.markdown(f'<div class="section-title">{t("PANEL PERFORMANCE ANALYZER","محلل أداء اللوح")}</div>', unsafe_allow_html=True)
-    if not is_logged_in:
-        st.markdown(f"""<div class="perf-card" style="opacity:0.5;pointer-events:none;">
-            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;">
-                {''.join(f'<div style="background:{INPUT_BG};border:1px solid {BORDER};border-radius:8px;padding:16px;text-align:center;color:{TXT_M};font-size:0.8rem;">——</div>' for _ in range(5))}
-            </div>
-        </div>
-        <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;padding:20px;text-align:center;margin-top:12px;">
-            <div style="font-size:1.2rem;margin-bottom:6px;">🔒</div>
-            <div style="font-weight:700;color:{TXT};margin-bottom:4px;">{t('Log in to analyze performance','سجّل دخولك لتحليل الأداء')}</div>
-            <div style="font-size:0.85rem;color:{TXT_M};">{t('Enter sensor readings to check if your panel is underperforming.','أدخل قراءات المستشعر للتحقق من أداء اللوح.')}</div>
-        </div>""", unsafe_allow_html=True)
-    elif perf_model is None:
+    if perf_model is None:
         st.warning(t("Performance model files not found.","ملفات نموذج الأداء غير موجودة."))
     else:
         tv = typical_vals
@@ -1192,17 +1134,24 @@ with tab3:
 with tab4:
     st.markdown(f'<div class="section-title">{t("SCAN HISTORY","سجل الفحص")}</div>', unsafe_allow_html=True)
     if not is_logged_in:
-        # Show blurred preview
         st.markdown(f"""
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
-            {''.join(f'<div class="metric-card" style="text-align:center;opacity:0.45;"><div class="metric-label">——</div><div class="metric-value" style="color:#f5a623;">—</div></div>' for _ in range(4))}
+        <div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:12px;
+             padding:40px;text-align:center;">
+            <div style="font-size:2.5rem;margin-bottom:12px;">📋</div>
+            <div style="font-size:1.05rem;font-weight:700;color:{TXT};margin-bottom:8px;">
+                {t('Your scan history will appear here','سجل فحوصاتك سيظهر هنا')}
+            </div>
+            <div style="font-size:0.88rem;color:{TXT_M};margin-bottom:20px;">
+                {t('Log in to see all your past scans, defect history, and statistics.','سجّل دخولك لعرض جميع فحوصاتك السابقة.')}
+            </div>
         </div>""", unsafe_allow_html=True)
-        for _ in range(3):
-            st.markdown(f'<div class="history-card" style="opacity:0.35;filter:blur(1.5px);"><div style="display:flex;justify-content:space-between;align-items:center;"><div>🔍 <span style="font-weight:700;margin-left:8px;color:{TXT};">████████</span><span style="margin-left:10px;color:{TXT_M};font-size:0.8rem;">██% {t("confidence","ثقة")}</span></div><div><span style="color:#f5a623;font-size:0.8rem;font-weight:700;">WARNING</span><span style="color:{TXT_M};font-size:0.73rem;"> · ████-██-██</span></div></div></div>', unsafe_allow_html=True)
-        st.markdown(f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;padding:20px;text-align:center;margin-top:12px;"><div style="font-size:1.2rem;margin-bottom:6px;">🔒</div><div style="font-weight:700;color:{TXT};margin-bottom:4px;">{t("Log in to view your scan history","سجّل دخولك لعرض سجل الفحص")}</div><div style="font-size:0.85rem;color:{TXT_M};">{t("All your scans are saved and accessible after login.","جميع فحوصاتك محفوظة ويمكن الوصول إليها بعد تسجيل الدخول.")}</div></div>', unsafe_allow_html=True)
+        if st.button(f"🔑 {t('Log In','دخول')}", key="btn_login_history"):
+            st.session_state._show_login = True
+            st.rerun()
     else:
         try:
             user_history = get_full_history(st.session_state.auth_email, admin=is_admin)
+            user_history = user_history[:30]  # last 30 scans only
         except Exception as e:
             st.error(f"Could not load history: {e}")
             user_history = []
