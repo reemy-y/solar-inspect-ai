@@ -133,9 +133,17 @@ def _mark_all_merged():
     conn = _db()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE scans SET merged_into_dataset = TRUE WHERE merged_into_dataset = FALSE"
-            )
+            cur.execute("UPDATE scans SET merged_into_dataset = TRUE WHERE merged_into_dataset = FALSE")
+        conn.commit()
+    finally:
+        conn.close()
+
+def _mark_scan_merged(scan_id: int):
+    """Mark a single scan as merged/processed."""
+    conn = _db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE scans SET merged_into_dataset = TRUE WHERE id = %s", (scan_id,))
         conn.commit()
     finally:
         conn.close()
@@ -144,19 +152,26 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
     new_rows = []
     for _, row in pending_df.iterrows():
         ts = row["scanned_at"]
+        # Use the DB timestamp directly — it was saved with Cairo time from app.py
         try:
-            ts = pd.to_datetime(ts, utc=True).tz_convert("Africa/Cairo").tz_localize(None)
-            if pd.isna(ts):
-                raise ValueError
+            if hasattr(ts, "strftime"):
+                ts_str  = ts.strftime("%Y-%m-%d %H:%M")
+                ts_date = ts.strftime("%Y-%m-%d")
+                ts_hour = ts.hour
+            else:
+                ts_parsed = pd.to_datetime(str(ts), errors="coerce")
+                if pd.isna(ts_parsed):
+                    from datetime import timedelta
+                    ts_parsed = datetime.utcnow() + timedelta(hours=2)
+                ts_str  = ts_parsed.strftime("%Y-%m-%d %H:%M")
+                ts_date = ts_parsed.strftime("%Y-%m-%d")
+                ts_hour = ts_parsed.hour
         except Exception:
-            try:
-                from datetime import timedelta
-                ts = datetime.utcnow() + timedelta(hours=2)
-            except Exception:
-                ts = datetime.now()
+            from datetime import timedelta
+            now = datetime.utcnow() + timedelta(hours=2)
+            ts_str, ts_date, ts_hour = now.strftime("%Y-%m-%d %H:%M"), now.strftime("%Y-%m-%d"), now.hour
 
-        ts_str = ts.strftime("%Y-%m-%d %H:%M")
-        conf   = float(row["confidence"])
+        conf = float(row["confidence"])
 
         def _safe(col):
             v = row.get(col)
@@ -164,8 +179,8 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
 
         new_rows.append({
             "timestamp":         ts_str,
-            "date":              ts.strftime("%Y-%m-%d"),
-            "hour":              ts.hour,
+            "date":              ts_date,
+            "hour":              ts_hour,
             "panel_id":          row["email"],
             "irradiation":       _safe("irradiation"),
             "ambient_temp_c":    _safe("ambient_temp_c"),
@@ -186,13 +201,6 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
             static_df[col] = ""
         if col not in new_df.columns:
             new_df[col] = ""
-    # Repair any bad timestamps in existing static data
-    if "timestamp" in static_df.columns:
-        static_df["timestamp"] = static_df["timestamp"].apply(
-            lambda v: datetime.now().strftime("%Y-%m-%d %H:%M")
-            if pd.isna(v) or str(v).strip().lower() in ("", "nan", "none", "nat", "—")
-            else str(v)[:16]
-        )
     merged = pd.concat([static_df[CSV_COLUMNS], new_df[CSV_COLUMNS]], ignore_index=True)
     return merged
 
@@ -488,86 +496,64 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         kpi(p1, "PENDING SCANS",    "فحوصات معلقة",  str(n_pending),  "#f5a623")
         kpi(p2, "CRITICAL PENDING", "حرجة معلقة",    str(n_critical), "#e74c3c")
 
-        st.markdown(f'<div style="margin-top:16px;margin-bottom:8px;font-size:0.82rem;color:{TXT_M};">{t("Preview of pending scans:","معاينة الفحوصات المعلقة:")}</div>', unsafe_allow_html=True)
-        preview_cols = [c for c in ["email", "scanned_at", "defect_type", "confidence", "severity"] if c in pending.columns]
-        rename_map = {
-            "email":       t("email", "البريد"),
-            "scanned_at":  t("scanned_at", "وقت الفحص"),
-            "defect_type": t("defect_type", "نوع العيب"),
-            "confidence":  t("confidence", "الثقة"),
-            "severity":    t("severity", "الخطورة"),
+        st.markdown(f'<div style="margin-top:20px;margin-bottom:10px;font-size:0.82rem;color:{TXT_M};">{t("Review each scan and approve or discard individually:","راجع كل فحص واعتمده أو تجاهله بشكل فردي:")}</div>', unsafe_allow_html=True)
+
+        BADGE_COLORS = {"critical":"#e74c3c","warning":"#f5a623","info":"#2ecc71"}
+        DEFECT_ICONS = {
+            "Bird-drop":"🐦","Clean":"✅","Dusty":"🌫️",
+            "Electrical-damage":"⚡","Physical-damage":"💥","Snow-covered":"❄️",
         }
-        st.dataframe(
-            pending[preview_cols].rename(columns=rename_map),
-            use_container_width=True,
-            hide_index=True,
-        )
+        DEFECT_AR = {
+            "Bird-drop":"إفرازات الطيور","Clean":"نظيف","Dusty":"تراكم غبار",
+            "Electrical-damage":"تلف كهربائي","Physical-damage":"تلف مادي","Snow-covered":"تغطية ثلج",
+        }
 
-        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-        col_approve, col_discard = st.columns(2)
+        for idx, row in pending.iterrows():
+            scan_id    = int(row["id"])
+            defect     = str(row.get("defect_type",""))
+            icon       = DEFECT_ICONS.get(defect,"🔍")
+            disp       = DEFECT_AR.get(defect, defect) if IS_AR else row.get("display_en", defect)
+            sev        = str(row.get("severity","info"))
+            sev_color  = BADGE_COLORS.get(sev,"#aaa")
+            conf       = float(row.get("confidence",0))
+            conf_pct   = f"{conf:.0%}" if conf<=1.0 else f"{conf:.0f}%"
+            email      = str(row.get("email",""))
+            ts         = row.get("scanned_at")
+            # Use the DB timestamp as-is (already correct Cairo time from INSERT)
+            ts_str     = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts,"strftime") else str(ts)[:16]
 
-        with col_approve:
-            st.markdown(f'<div style="font-size:0.78rem;color:{TXT_M};margin-bottom:6px;">{t(f"Merges all {n_pending} scans into the approved dataset.",f"يدمج {n_pending} فحصاً في البيانات المعتمدة.")}</div>', unsafe_allow_html=True)
-            if st.button(t("✅ Approve & Merge All", "✅ اعتماد ودمج الكل"), use_container_width=True, key="btn_merge"):
-                with st.spinner(t("Merging scans...", "جاري الدمج...")):
-                    current_df = load_static_dataset()
-                    merged_df  = _merge_pending_into_csv(pending, current_df)
-                    success    = _save_csv_to_storage(merged_df)
-                if success:
-                    _mark_all_merged()
-                    load_static_dataset.clear()
-                    st.success(t(f"✅ {n_pending} scans merged successfully!", f"✅ تم دمج {n_pending} فحصاً بنجاح!"))
-                    st.rerun()
-                else:
-                    st.error(t("Upload to Supabase Storage failed. Check SUPABASE_URL and SUPABASE_SERVICE_KEY.",
-                               "فشل الرفع إلى Supabase Storage. تحقق من المتغيرات."))
-
-        with col_discard:
-            st.markdown(f'<div style="font-size:0.78rem;color:{TXT_M};margin-bottom:6px;">{t(f"Discards all {n_pending} scans without adding to dataset.",f"يتجاهل {n_pending} فحصاً دون إضافة.")}</div>', unsafe_allow_html=True)
-            if st.button(t("🗑 Discard All Pending", "🗑 تجاهل الكل"), use_container_width=True, key="btn_discard"):
-                _mark_all_merged()
-                st.warning(t(f"🗑 {n_pending} pending scans discarded — dataset unchanged.", f"🗑 تم تجاهل {n_pending} فحصاً — البيانات لم تتغير."))
-                st.rerun()
-
-    # ═══════════════════════════════════════════════════════
-    # SECTION 2b — FIX EXISTING TIMESTAMPS
-    # ═══════════════════════════════════════════════════════
-    st.markdown("<hr style='border:1px solid #2e3a50;margin:32px 0;'>", unsafe_allow_html=True)
-    section("FIX MISSING TIMESTAMPS IN DATASET", "إصلاح التواريخ المفقودة في البيانات")
-    st.markdown(
-        f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;'
-        f'padding:12px 18px;margin-bottom:16px;font-size:0.85rem;color:{TXT_M};">'
-        f'🔧 {t("If your dataset has rows with missing timestamps (— or empty), click below to auto-fill them with the current time and re-upload.",  "إذا كانت هناك صفوف بدون تاريخ، انقر أدناه لملء التواريخ تلقائياً وإعادة الرفع.")}'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-    if st.button(t("🔧 Fix All Missing Timestamps Now", "🔧 إصلاح جميع التواريخ المفقودة الآن"), use_container_width=True, key="btn_fix_ts"):
-        with st.spinner(t("Loading and fixing dataset...", "جاري تحميل وإصلاح البيانات...")):
-            fix_df = load_static_dataset()
-            if fix_df.empty:
-                st.warning(t("No dataset found to fix.", "لا توجد بيانات للإصلاح."))
-            else:
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                fixed_count = 0
-                if "timestamp" in fix_df.columns:
-                    mask = fix_df["timestamp"].isna()
-                    fixed_count = int(mask.sum())
-                    fix_df.loc[mask, "timestamp"] = now_str
-                    if "date" in fix_df.columns:
-                        fix_df.loc[mask, "date"] = now_str[:10]
-                    if "hour" in fix_df.columns:
-                        fix_df.loc[mask, "hour"] = datetime.now().hour
-                # Convert timestamp back to string for CSV storage
-                fix_df["timestamp"] = fix_df["timestamp"].apply(
-                    lambda v: str(v)[:16] if not pd.isna(v) else now_str
+            card_col, btn_col = st.columns([5, 2])
+            with card_col:
+                st.markdown(
+                    f'<div style="background:{BG_CARD};border:1px solid {sev_color}44;border-radius:10px;'
+                    f'padding:12px 18px;">'
+                    f'<span style="font-size:1.1rem;">{icon}</span>'
+                    f'<span style="font-weight:700;margin-left:8px;color:{TXT};">{disp}</span>'
+                    f'<span style="margin-left:10px;color:{sev_color};font-size:0.8rem;font-weight:700;">{sev.upper()}</span>'
+                    f'<span style="margin-left:10px;color:{TXT_M};font-size:0.78rem;">{conf_pct}</span>'
+                    f'<br><span style="color:{TXT_M};font-size:0.75rem;">👤 {email} &nbsp;·&nbsp; 🕐 {ts_str}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
                 )
-                success = _save_csv_to_storage(fix_df)
-                if success:
-                    load_static_dataset.clear()
-                    st.success(t(f"✅ Fixed {fixed_count} rows with missing timestamps!", f"✅ تم إصلاح {fixed_count} صف بتواريخ مفقودة!"))
-                    st.rerun()
-                else:
-                    st.error(t("Upload failed.", "فشل الرفع."))
+            with btn_col:
+                ba, bd = st.columns(2)
+                with ba:
+                    if st.button("✅", key=f"merge_{scan_id}", help=t("Merge into dataset","دمج في البيانات"), use_container_width=True):
+                        single = pending[pending["id"] == scan_id]
+                        current_df = load_static_dataset()
+                        merged_df  = _merge_pending_into_csv(single, current_df)
+                        if _save_csv_to_storage(merged_df):
+                            _mark_scan_merged(scan_id)
+                            load_static_dataset.clear()
+                            st.toast(t(f"✅ Scan merged!","✅ تم الدمج!"))
+                            st.rerun()
+                        else:
+                            st.error(t("Upload failed.","فشل الرفع."))
+                with bd:
+                    if st.button("🗑", key=f"discard_{scan_id}", help=t("Discard","تجاهل"), use_container_width=True):
+                        _mark_scan_merged(scan_id)
+                        st.toast(t("🗑 Scan discarded.","🗑 تم التجاهل."))
+                        st.rerun()
 
     # ═══════════════════════════════════════════════════════
     # SECTION 3 — MANUAL CSV UPLOAD
