@@ -581,11 +581,6 @@ with col_ctrl:
 # ─────────────────────────────────────────────────────────────────────
 if not is_logged_in and st.session_state.get("_show_login", False):
     with st.container():
-        st.markdown(f"""
-        <div style="text-align:center;margin:8px 0 16px 0;">
-            <span style="font-size:2rem;">☀️</span>
-        </div>
-        """, unsafe_allow_html=True)
         _, mc, _ = st.columns([1, 2, 1])
         with mc:
             tl, ts = st.tabs([t("🔑 Log In","🔑 دخول"), t("✨ Sign Up","✨ تسجيل")])
@@ -619,7 +614,7 @@ if not is_logged_in and st.session_state.get("_show_login", False):
 # ─────────────────────────────────────────────────────────────────────
 # 7. GUEST BANNER — one clean bar with single login button
 # ─────────────────────────────────────────────────────────────────────
-if not is_logged_in:
+if not is_logged_in and not st.session_state.get("_show_login", False):
     gb1, gb2 = st.columns([5, 1])
     with gb1:
         st.markdown(f"""
