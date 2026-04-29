@@ -127,6 +127,9 @@ def _get_pending_scans() -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
     df["scanned_at"] = pd.to_datetime(df["scanned_at"])
+    from datetime import timezone, timedelta
+    cairo_now = pd.Timestamp.now(tz=None) + pd.Timedelta(hours=2)
+    df["scanned_at"] = df["scanned_at"].fillna(cairo_now)
     return df
 
 def _mark_all_merged():
