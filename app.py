@@ -208,7 +208,7 @@ def db_get_scans(email: str, admin: bool = False) -> list:
     finally:
         conn.close()
 
-     def _fmt_time(val):
+    def _fmt_time(val):
         if val is None:
             return "—"
         if hasattr(val, "strftime"):
