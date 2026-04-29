@@ -44,10 +44,21 @@ def _db():
 def _hash(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
+def _now_cairo() -> datetime:
+    """Return current datetime in Cairo timezone (UTC+2 or UTC+3 with DST)."""
+    try:
+        import zoneinfo
+        from datetime import timezone as _tz
+        cairo = zoneinfo.ZoneInfo("Africa/Cairo")
+        return datetime.now(cairo).replace(tzinfo=None)
+    except Exception:
+        from datetime import timedelta
+        return datetime.utcnow() + timedelta(hours=2)
+
 def _create_token(email: str) -> str:
     from datetime import timedelta
     token   = _secrets.token_hex(32)
-    now     = datetime.now()
+    now     = _now_cairo()
     expires = now + timedelta(days=30)
     conn = _db()
     try:
@@ -145,8 +156,7 @@ def db_save_scan(email, pred_class, info, confidence,
                  irradiation=None, ambient_temp=None, module_temp=None,
                  dc_power=None, ac_power=None, efficiency_pct=None,
                  panel_capacity=None, panel_age=None):
-    from datetime import timezone
-    now = datetime.now(timezone.utc)
+    now = _now_cairo()
     conn = _db()
     try:
         with conn.cursor() as cur:
@@ -901,7 +911,6 @@ else:
 # TAB 1 — IMAGE SCAN
 # ═══════════════════════════════════════════════════════════════
 with tab1:
-    # Guest sees the upload zone but gets a login prompt when they interact
     if not is_logged_in:
         st.markdown(f"""
         <div class="upload-zone">
@@ -910,14 +919,17 @@ with tab1:
                 {t('Upload a solar panel image to detect defects','ارفع صورة لوح شمسي للكشف عن العيوب')}
             </div>
             <div style="font-size:0.85rem;color:{TXT_M};margin-bottom:20px;">JPG · JPEG · PNG</div>
-            <div style="background:#1e2d1e;border:1px solid #2ecc71;border-radius:8px;padding:12px 20px;display:inline-block;">
-                <span style="color:#2ecc71;font-weight:700;">🔑 {t('Log in to start scanning','سجّل دخولك للبدء بالفحص')}</span>
-            </div>
-        </div>
-        <div style="margin-top:16px;">""", unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
 
-        # Show disabled-looking sensor panel
-        st.markdown(f"""<div class="perf-card" style="opacity:0.45;pointer-events:none;">
+        # Real clickable button that opens the login modal
+        _, bc, _ = st.columns([2, 1, 2])
+        with bc:
+            if st.button(f"🔑 {t('Log in to start scanning','سجّل دخولك للبدء')}", use_container_width=True, key="btn_login_scan"):
+                st.session_state._show_login = True
+                st.rerun()
+
+        # Show blurred preview panels
+        st.markdown(f"""<div class="perf-card" style="opacity:0.4;pointer-events:none;margin-top:16px;">
             <div style="font-size:0.88rem;font-weight:700;color:{TXT};margin-bottom:8px;">
                 📡 {t('Panel Sensor Parameters (Optional)','معطيات المستشعر — اختياري')}
             </div>
@@ -928,18 +940,8 @@ with tab1:
         <div style="margin-top:16px;background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;padding:24px;text-align:center;">
             <div style="font-size:1.3rem;margin-bottom:8px;">🔒</div>
             <div style="font-weight:700;color:{TXT};margin-bottom:4px;">{t('Results will appear here','النتائج ستظهر هنا')}</div>
-            <div style="font-size:0.85rem;color:{TXT_M};">{t('Log in to see defect analysis, severity, and maintenance tips.','سجّل دخولك لرؤية تحليل العيوب والخطورة والنصائح.')}</div>
+            <div style="font-size:0.85rem;color:{TXT_M};">{t('Log in to see defect analysis, severity, and maintenance tips.','سجّل دخولك لرؤية تحليل العيوب.')}</div>
         </div>""", unsafe_allow_html=True)
-
-        # Show disabled maintenance tips preview
-        st.markdown(f'<div class="section-title" style="margin-top:24px;">{t("MAINTENANCE TIPS","نصائح الصيانة")}</div>', unsafe_allow_html=True)
-        tip_cols = st.columns(3)
-        for i, label in enumerate([t("Tip 1","نصيحة 1"), t("Tip 2","نصيحة 2"), t("Tip 3","نصيحة 3")]):
-            with tip_cols[i]:
-                st.markdown(f'<div class="tip-card" style="opacity:0.4;"><div style="font-size:1.2rem;margin-bottom:6px;">💡</div><div class="tip-text" style="filter:blur(3px);">Lorem ipsum dolor sit amet consectetur</div></div>', unsafe_allow_html=True)
-
-        st.markdown(f'<div class="section-title">{t("EXPORT REPORT","تصدير التقرير")}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:8px;padding:12px 16px;color:{TXT_M};font-size:0.85rem;">🔒 {t("Log in to generate and download PDF reports.","سجّل دخولك لإنشاء وتحميل تقارير PDF.")}</div>', unsafe_allow_html=True)
 
     elif effnet_model is None:
         st.error(t("Model file not found: best_efficientnet_b0.pth","ملف النموذج غير موجود."))
