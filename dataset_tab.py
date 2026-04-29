@@ -152,13 +152,21 @@ def _mark_scan_merged(scan_id: int):
         conn.close()
 
 def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -> pd.DataFrame:
+    # Compute medians from existing real data to fill missing sensor fields
+    sensor_cols = ['irradiation','ambient_temp_c','module_temp_c','dc_power_kw','ac_power_kw','efficiency_pct']
+    medians = {}
+    for col in sensor_cols:
+        if col in static_df.columns:
+            vals = pd.to_numeric(static_df[col], errors='coerce').dropna()
+            medians[col] = round(float(vals.median()), 3) if not vals.empty else 0.5
+
     new_rows = []
     for _, row in pending_df.iterrows():
         ts = row["scanned_at"]
         # Use the DB timestamp directly — it was saved with Cairo time from app.py
         try:
             if hasattr(ts, "strftime"):
-                ts_str  = ts.strftime("%Y-%m-%d %H:%M")
+                ts_str  = ts.strftime("%Y-%m-%d %H:%M:%S")
                 ts_date = ts.strftime("%Y-%m-%d")
                 ts_hour = ts.hour
             else:
@@ -166,19 +174,21 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
                 if pd.isna(ts_parsed):
                     from datetime import timedelta
                     ts_parsed = datetime.utcnow() + timedelta(hours=2)
-                ts_str  = ts_parsed.strftime("%Y-%m-%d %H:%M")
+                ts_str  = ts_parsed.strftime("%Y-%m-%d %H:%M:%S")
                 ts_date = ts_parsed.strftime("%Y-%m-%d")
                 ts_hour = ts_parsed.hour
         except Exception:
             from datetime import timedelta
             now = datetime.utcnow() + timedelta(hours=2)
-            ts_str, ts_date, ts_hour = now.strftime("%Y-%m-%d %H:%M"), now.strftime("%Y-%m-%d"), now.hour
+            ts_str, ts_date, ts_hour = now.strftime("%Y-%m-%d %H:%M:%S"), now.strftime("%Y-%m-%d"), now.hour
 
         conf = float(row["confidence"])
 
         def _safe(col):
             v = row.get(col)
-            return "" if v is None or (isinstance(v, float) and pd.isna(v)) else v
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return medians.get(col, "")
+            return v
 
         new_rows.append({
             "timestamp":         ts_str,
@@ -206,7 +216,6 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
             new_df[col] = ""
     merged = pd.concat([static_df[CSV_COLUMNS], new_df[CSV_COLUMNS]], ignore_index=True)
     return merged
-
 # ─────────────────────────────────────────────────────────────────────
 # MAIN RENDER
 # ─────────────────────────────────────────────────────────────────────
