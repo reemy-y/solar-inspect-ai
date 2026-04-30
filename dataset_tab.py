@@ -152,14 +152,6 @@ def _mark_scan_merged(scan_id: int):
         conn.close()
 
 def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -> pd.DataFrame:
-    # Compute medians from existing real data to fill missing sensor fields
-    sensor_cols = ['irradiation','ambient_temp_c','module_temp_c','dc_power_kw','ac_power_kw','efficiency_pct']
-    medians = {}
-    for col in sensor_cols:
-        if col in static_df.columns:
-            vals = pd.to_numeric(static_df[col], errors='coerce').dropna()
-            medians[col] = round(float(vals.median()), 3) if not vals.empty else 0.5
-
     new_rows = []
     for _, row in pending_df.iterrows():
         ts = row["scanned_at"]
@@ -185,15 +177,12 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
         conf = float(row["confidence"])
 
         def _safe(col):
-            v = row.get(col)
-            if v is None or (isinstance(v, float) and pd.isna(v)):
-                return medians.get(col, "")
-            # Treat 0 as "not entered" for sensor fields
             try:
-                if float(v) == 0.0 and col in medians:
-                    return medians.get(col, "")
-            except Exception:
-                pass
+                v = row[col]
+            except (KeyError, IndexError):
+                return ""
+            if v is None or (isinstance(v, float) and pd.isna(v)) or v == "":
+                return ""
             return v
 
         new_rows.append({
