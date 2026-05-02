@@ -586,8 +586,9 @@ with col_ctrl:
             </div>
         </div>
         """, unsafe_allow_html=True)
-        _, bc1 = st.columns([1, 1])
+        _, _, bc1 = st.columns([1, 1, 1])
         with bc1:
+            st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
             if st.button("🚪 Log Out", use_container_width=True, key="btn_logout"):
                 if st.session_state.session_token:
                     _delete_token(st.session_state.session_token)
@@ -596,6 +597,7 @@ with col_ctrl:
                 st.session_state.session_token = ""
                 st.session_state.history       = []
                 st.rerun()
+            st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
             if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
                 st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
                 st.rerun()
@@ -1046,7 +1048,7 @@ with tab1:
                             panel_age=s_age if s_age > 0 else None,
                         )
                         st.session_state.saved_hashes.add(file_hash)
-                        st.toast(t(" Scan saved to your history", " تم حفظ الفحص في سجلك"), icon="✅")
+                        st.toast(t("Scan saved to your history", "تم حفظ الفحص في سجلك"), icon="✅")
                         st.rerun()
             else:
                 st.markdown(
