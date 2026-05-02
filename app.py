@@ -589,7 +589,7 @@ with col_ctrl:
         _, _, bc1 = st.columns([1, 1, 1])
         with bc1:
             st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
-            if st.button("🚪 Log Out", use_container_width=True, key="btn_logout"):
+            if st.button("Log Out", use_container_width=True, key="btn_logout"):
                 if st.session_state.session_token:
                     _delete_token(st.session_state.session_token)
                 st.session_state.logged_in     = False
@@ -598,7 +598,7 @@ with col_ctrl:
                 st.session_state.history       = []
                 st.rerun()
             st.markdown("<div style='margin-top:8px;'></div>", unsafe_allow_html=True)
-            if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
+            if st.button(f"{lang_label}", use_container_width=True, key="btn_lang"):
                 st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
                 st.rerun()
     else:
