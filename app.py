@@ -117,8 +117,8 @@ def _get_role(email: str) -> str:
         conn.close()
 
 def auth_signup(email: str, password: str):
-    if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
-        return False, "Invalid email format."
+    if not re.match(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$", email.strip()):
+        return False, "Invalid email format. Please use a valid address (e.g. you@example.com)."
     if len(password) < 6:
         return False, "Password must be at least 6 characters."
     role = "admin" if email.lower() == ADMIN_EMAIL.lower() else "user"
@@ -469,6 +469,12 @@ html, body, [class*="css"] {{
     background-color:{INPUT_BG} !important; color:{TXT} !important;
     border-color:{BORDER} !important; border-radius:8px !important;
 }}
+/* Hide "Press Enter to submit form" tooltip */
+.stTextInput [data-baseweb="input"] + div,
+small.st-emotion-cache-1gulkj5,
+[data-testid="InputInstructions"] {{
+    display: none !important;
+}}
 .stNumberInput label, .stTextInput label, .stSlider label,
 .stSelectbox label, [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] {{
     color:{TXT_S} !important; font-size:0.92rem !important; font-weight:500 !important;
@@ -580,12 +586,8 @@ with col_ctrl:
             </div>
         </div>
         """, unsafe_allow_html=True)
-        bc1, bc2 = st.columns(2)
+        _, bc1 = st.columns([1, 1])
         with bc1:
-            if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
-                st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
-                st.rerun()
-        with bc2:
             if st.button("🚪 Log Out", use_container_width=True, key="btn_logout"):
                 if st.session_state.session_token:
                     _delete_token(st.session_state.session_token)
@@ -593,6 +595,9 @@ with col_ctrl:
                 st.session_state.auth_email    = ""
                 st.session_state.session_token = ""
                 st.session_state.history       = []
+                st.rerun()
+            if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
+                st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
                 st.rerun()
     else:
         # Guest — only language toggle in header
@@ -1041,7 +1046,7 @@ with tab1:
                             panel_age=s_age if s_age > 0 else None,
                         )
                         st.session_state.saved_hashes.add(file_hash)
-                        st.toast(t("✅ Scan saved to your history", "✅ تم حفظ الفحص في سجلك"), icon="✅")
+                        st.toast(t(" Scan saved to your history", " تم حفظ الفحص في سجلك"), icon="✅")
                         st.rerun()
             else:
                 st.markdown(
