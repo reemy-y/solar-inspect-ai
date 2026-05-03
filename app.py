@@ -479,6 +479,18 @@ small.st-emotion-cache-1gulkj5,
 [data-testid="stVerticalBlock"] .user-chip {{
     margin-bottom: 0 !important;
 }}
+/* Header action buttons — compact, side by side */
+[data-testid="column"] .stButton button {{
+    padding: 4px 14px !important;
+    font-size: 0.82rem !important;
+    border-radius: 20px !important;
+    border: 1px solid {BORDER} !important;
+    background: {BG_CARD} !important;
+    color: {TXT} !important;
+    white-space: nowrap !important;
+    min-height: 0 !important;
+    line-height: 1.6 !important;
+}}
 .stNumberInput label, .stTextInput label, .stSlider label,
 .stSelectbox label, [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] {{
     color:{TXT_S} !important; font-size:0.92rem !important; font-weight:500 !important;
@@ -583,15 +595,24 @@ with col_ctrl:
         short_email  = (st.session_state.auth_email[:18] + "…") if len(st.session_state.auth_email) > 18 else st.session_state.auth_email
         admin_tag    = ' &nbsp;<span style="color:#f5a623;font-weight:800;">ADMIN</span>' if is_admin else ""
         st.markdown(f"""
-        <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:18px;gap:8px;">
+        <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:14px;gap:10px;">
             <div class="user-chip">
                 <div class="avatar">{user_initial}</div>
                 <span class="email">{short_email}{admin_tag}</span>
             </div>
+            <div style="display:flex;gap:8px;">
+                <div id="lang_btn_wrap" style="cursor:pointer;"></div>
+                <div id="logout_btn_wrap" style="cursor:pointer;"></div>
+            </div>
         </div>
         """, unsafe_allow_html=True)
-        _, _, bc1 = st.columns([1, 1, 1])
+        # Use hidden Streamlit buttons for actual click logic, styled via CSS
+        bc1, bc2 = st.columns(2)
         with bc1:
+            if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
+                st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
+                st.rerun()
+        with bc2:
             if st.button("🚪 Log Out", use_container_width=True, key="btn_logout"):
                 if st.session_state.session_token:
                     _delete_token(st.session_state.session_token)
@@ -599,9 +620,6 @@ with col_ctrl:
                 st.session_state.auth_email    = ""
                 st.session_state.session_token = ""
                 st.session_state.history       = []
-                st.rerun()
-            if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
-                st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
                 st.rerun()
     else:
         # Guest — only language toggle in header
@@ -1050,7 +1068,7 @@ with tab1:
                             panel_age=s_age if s_age > 0 else None,
                         )
                         st.session_state.saved_hashes.add(file_hash)
-                        st.toast(t("Scan saved to your history", "تم حفظ الفحص في سجلك"), icon="✅")
+                        st.toast(t("✅ Scan saved to your history", "✅ تم حفظ الفحص في سجلك"), icon="✅")
                         st.rerun()
             else:
                 st.markdown(
