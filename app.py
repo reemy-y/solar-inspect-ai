@@ -620,14 +620,6 @@ with col_ctrl:
         user_initial = st.session_state.auth_email[0].upper()
         short_email  = st.session_state.auth_email.split("@")[0]
         admin_tag    = ' &nbsp;<span style="color:#f5a623;font-weight:800;">ADMIN</span>' if is_admin else ""
-        st.markdown(f"""
-        <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:14px;gap:6px;">
-            <div class="user-chip">
-                <div class="avatar">{user_initial}</div>
-                <span class="email">{short_email}{admin_tag}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
         _, btn_col = st.columns([1, 1])
         with btn_col:
             if st.button(f"🌐 {lang_label}", key="btn_lang", use_container_width=True):
