@@ -479,10 +479,10 @@ small.st-emotion-cache-1gulkj5,
 [data-testid="stVerticalBlock"] .user-chip {{
     margin-bottom: 0 !important;
 }}
-/* Header action buttons — compact, side by side */
+/* Header action buttons — small and compact */
 [data-testid="column"] .stButton button {{
-    padding: 4px 14px !important;
-    font-size: 0.82rem !important;
+    padding: 2px 10px !important;
+    font-size: 0.78rem !important;
     border-radius: 20px !important;
     border: 1px solid {BORDER} !important;
     background: {BG_CARD} !important;
@@ -490,6 +490,8 @@ small.st-emotion-cache-1gulkj5,
     white-space: nowrap !important;
     min-height: 0 !important;
     line-height: 1.6 !important;
+    width: auto !important;
+    display: inline-block !important;
 }}
 .stNumberInput label, .stTextInput label, .stSlider label,
 .stSelectbox label, [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] {{
@@ -592,10 +594,10 @@ with col_ctrl:
 
     if is_logged_in:
         user_initial = st.session_state.auth_email[0].upper()
-        short_email  = (st.session_state.auth_email[:18] + "…") if len(st.session_state.auth_email) > 18 else st.session_state.auth_email
+        short_email  = st.session_state.auth_email.split("@")[0]
         admin_tag    = ' &nbsp;<span style="color:#f5a623;font-weight:800;">ADMIN</span>' if is_admin else ""
         st.markdown(f"""
-        <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:14px;gap:8px;">
+        <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:14px;gap:6px;">
             <div class="user-chip">
                 <div class="avatar">{user_initial}</div>
                 <span class="email">{short_email}{admin_tag}</span>
