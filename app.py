@@ -479,6 +479,14 @@ small.st-emotion-cache-1gulkj5,
 [data-testid="stVerticalBlock"] .user-chip {{
     margin-bottom: 0 !important;
 }}
+/* Hide native streamlit header buttons — replaced by HTML buttons above */
+.hidden-btns, .hidden-btns * {{
+    display: none !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+}}
 /* Header action buttons — shrink to content, right-aligned */
 [data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] .stButton {{
     display: flex !important;
@@ -620,7 +628,6 @@ with col_ctrl:
             </div>
         </div>
         """, unsafe_allow_html=True)
-        # Right-aligned action buttons via HTML + hidden Streamlit triggers
         st.markdown(f"""
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-top:6px;">
             <button onclick="window.parent.document.querySelectorAll('button[kind=secondary]')[0].click()"
@@ -634,8 +641,8 @@ with col_ctrl:
                 🚪 Log Out
             </button>
         </div>
-        <div style="display:none;">
         """, unsafe_allow_html=True)
+        st.markdown('<div class="hidden-btns">', unsafe_allow_html=True)
         if st.button(f"🌐 {lang_label}", key="btn_lang"):
             st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
             st.rerun()
