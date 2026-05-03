@@ -578,7 +578,7 @@ small.st-emotion-cache-1gulkj5,
 is_logged_in = st.session_state.logged_in
 is_admin     = is_logged_in and _get_role(st.session_state.auth_email) == "admin"
 
-col_logo, col_ctrl = st.columns([4, 3])
+col_logo, col_ctrl = st.columns([5, 2])
 with col_logo:
     st.markdown(f"""
     <div class="hero">
@@ -595,27 +595,24 @@ with col_ctrl:
         short_email  = (st.session_state.auth_email[:18] + "…") if len(st.session_state.auth_email) > 18 else st.session_state.auth_email
         admin_tag    = ' &nbsp;<span style="color:#f5a623;font-weight:800;">ADMIN</span>' if is_admin else ""
         st.markdown(f"""
-        <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:14px;gap:10px;">
+        <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:14px;gap:8px;">
             <div class="user-chip">
                 <div class="avatar">{user_initial}</div>
                 <span class="email">{short_email}{admin_tag}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
-        bc1, bc2 = st.columns([1, 1])
-        with bc1:
-            if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
-                st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
-                st.rerun()
-        with bc2:
-            if st.button("🚪 Log Out", use_container_width=True, key="btn_logout"):
-                if st.session_state.session_token:
-                    _delete_token(st.session_state.session_token)
-                st.session_state.logged_in     = False
-                st.session_state.auth_email    = ""
-                st.session_state.session_token = ""
-                st.session_state.history       = []
-                st.rerun()
+        if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
+            st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
+            st.rerun()
+        if st.button("🚪 Log Out", use_container_width=True, key="btn_logout"):
+            if st.session_state.session_token:
+                _delete_token(st.session_state.session_token)
+            st.session_state.logged_in     = False
+            st.session_state.auth_email    = ""
+            st.session_state.session_token = ""
+            st.session_state.history       = []
+            st.rerun()
     else:
         # Guest — only language toggle in header
         _, bc1 = st.columns([1, 1])
