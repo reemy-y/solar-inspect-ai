@@ -479,19 +479,20 @@ small.st-emotion-cache-1gulkj5,
 [data-testid="stVerticalBlock"] .user-chip {{
     margin-bottom: 0 !important;
 }}
-/* Header action buttons — small and compact */
-[data-testid="column"] .stButton button {{
-    padding: 2px 10px !important;
-    font-size: 0.78rem !important;
+/* Header action buttons — shrink to content, right-aligned */
+[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] .stButton {{
+    display: flex !important;
+    justify-content: flex-end !important;
+}}
+[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] .stButton button {{
+    padding: 3px 14px !important;
+    font-size: 0.82rem !important;
     border-radius: 20px !important;
     border: 1px solid {BORDER} !important;
     background: {BG_CARD} !important;
     color: {TXT} !important;
     white-space: nowrap !important;
-    min-height: 0 !important;
-    line-height: 1.6 !important;
     width: auto !important;
-    display: inline-block !important;
 }}
 .stNumberInput label, .stTextInput label, .stSlider label,
 .stSelectbox label, [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] {{
@@ -604,10 +605,11 @@ with col_ctrl:
             </div>
         </div>
         """, unsafe_allow_html=True)
-        if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
+        st.markdown('<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-top:4px;">', unsafe_allow_html=True)
+        if st.button(f"🌐 {lang_label}", key="btn_lang"):
             st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
             st.rerun()
-        if st.button("🚪 Log Out", use_container_width=True, key="btn_logout"):
+        if st.button("🚪 Log Out", key="btn_logout"):
             if st.session_state.session_token:
                 _delete_token(st.session_state.session_token)
             st.session_state.logged_in     = False
@@ -615,6 +617,7 @@ with col_ctrl:
             st.session_state.session_token = ""
             st.session_state.history       = []
             st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
     else:
         # Guest — only language toggle in header
         _, bc1 = st.columns([1, 1])
