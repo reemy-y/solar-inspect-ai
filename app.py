@@ -620,7 +620,22 @@ with col_ctrl:
             </div>
         </div>
         """, unsafe_allow_html=True)
-        st.markdown('<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-top:4px;">', unsafe_allow_html=True)
+        # Right-aligned action buttons via HTML + hidden Streamlit triggers
+        st.markdown(f"""
+        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;margin-top:6px;">
+            <button onclick="window.parent.document.querySelectorAll('button[kind=secondary]')[0].click()"
+                style="background:{BG_CARD};color:{TXT};border:1px solid {BORDER};border-radius:20px;
+                       padding:4px 16px;font-size:0.82rem;cursor:pointer;white-space:nowrap;">
+                🌐 {lang_label}
+            </button>
+            <button onclick="window.parent.document.querySelectorAll('button[kind=secondary]')[1].click()"
+                style="background:{BG_CARD};color:{TXT};border:1px solid {BORDER};border-radius:20px;
+                       padding:4px 16px;font-size:0.82rem;cursor:pointer;white-space:nowrap;">
+                🚪 Log Out
+            </button>
+        </div>
+        <div style="display:none;">
+        """, unsafe_allow_html=True)
         if st.button(f"🌐 {lang_label}", key="btn_lang"):
             st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
             st.rerun()
