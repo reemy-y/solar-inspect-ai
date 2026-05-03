@@ -607,7 +607,7 @@ with col_ctrl:
         </div>
         """, unsafe_allow_html=True)
         # Use hidden Streamlit buttons for actual click logic, styled via CSS
-        bc1, bc2 = st.columns(2)
+        bc1, bc2 = st.columns([1, 2])
         with bc1:
             if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
                 st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
