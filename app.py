@@ -484,7 +484,22 @@ small.st-emotion-cache-1gulkj5,
     display: flex !important;
     justify-content: flex-end !important;
 }}
-[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] .stButton button {{
+[data-testid="stVerticalBlock"] > [data-testid="stVerticalBlock"] .stButton > button {{
+    padding: 3px 14px !important;
+    font-size: 0.82rem !important;
+    border-radius: 20px !important;
+    border: 1px solid {BORDER} !important;
+    background: {BG_CARD} !important;
+    color: {TXT} !important;
+    white-space: nowrap !important;
+    width: auto !important;
+}}
+/* Right-align buttons inside col_ctrl specifically */
+[data-testid="column"]:last-child .stButton {{
+    display: flex !important;
+    justify-content: flex-end !important;
+}}
+[data-testid="column"]:last-child .stButton > button {{
     padding: 3px 14px !important;
     font-size: 0.82rem !important;
     border-radius: 20px !important;
