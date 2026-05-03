@@ -628,14 +628,6 @@ with col_ctrl:
             </div>
         </div>
         """, unsafe_allow_html=True)
-        st.markdown(f"""
-        <div style="display:flex;flex-direction:column;align-items:flex-end;padding-top:14px;gap:6px;">
-            <div class="user-chip">
-                <div class="avatar">{user_initial}</div>
-                <span class="email">{short_email}{admin_tag}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
         _, btn_col = st.columns([1, 1])
         with btn_col:
             if st.button(f"🌐 {lang_label}", key="btn_lang", use_container_width=True):
