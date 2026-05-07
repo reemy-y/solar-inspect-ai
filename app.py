@@ -772,7 +772,17 @@ BADGE = {
 def load_effnet():
     path = "best_resnet50.pth"
     if not os.path.exists(path):
-        return None
+        try:
+            import requests
+            url = "https://huggingface.co/reem-y/solar-resnet50/resolve/main/best_resnet50.pth"
+            st.info("Downloading model... please wait.")
+            r = requests.get(url, stream=True, timeout=120)
+            with open(path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+        except Exception as e:
+            st.error(f"Could not download model: {e}")
+            return None
     m = timm.create_model("resnet50", pretrained=False, num_classes=6)
     m.load_state_dict(torch.load(path, map_location="cpu"))
     m.eval()
