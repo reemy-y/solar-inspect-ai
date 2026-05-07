@@ -1051,6 +1051,8 @@ with tab1:
             pred_idx   = int(np.argmax(probs))
             pred_class = CLASSES[pred_idx]
             confidence = float(probs[pred_idx])
+            # Normalize class name to match DEFECT_INFO keys
+            pred_class = pred_class.replace('Physical-Damage','Physical-damage').replace('Snow-Covered','Snow-covered')
             info       = DEFECT_INFO[pred_class]
             display    = info["display_ar"] if IS_AR else info["display_en"]
             sev        = info["severity"]
