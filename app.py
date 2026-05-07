@@ -775,7 +775,7 @@ def load_effnet():
         try:
             import requests
             url = "https://huggingface.co/reem-y/solar-resnet50/resolve/main/best_resnet50.pth"
-            st.info("Downloading model... please wait.")
+
             r = requests.get(url, stream=True, timeout=120)
             with open(path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
