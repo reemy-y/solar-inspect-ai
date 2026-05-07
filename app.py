@@ -813,56 +813,36 @@ lstm_model, lstm_scaler, lstm_meta, sample_data  = load_lstm()
 
 def is_solar_panel_image(image) -> bool:
     """
-    Heuristic check — no external API needed.
-    Solar panels share 3 traits:
-      1. Predominantly blue/dark-blue or grey tones
-      2. High uniformity (low colour variance) — grid pattern
-      3. Rectangular-ish aspect ratio (not portrait photos)
-    Returns True if image is likely a solar panel.
+    Heuristic solar panel detector — no external API.
+    Scores image on 5 traits common to solar panels:
+    dark, blue/grey tones, low saturation, not warm, spatially uniform.
     """
     import numpy as np
     img = image.resize((128, 128))
-    arr = np.array(img).astype(float)  # H x W x 3  (RGB)
-
+    arr = np.array(img).astype(float)
     R, G, B = arr[:,:,0], arr[:,:,1], arr[:,:,2]
 
-    # ── Feature 1: blue/dark dominance
-    # Solar panels are typically dark blue, grey, or black
     mean_r = R.mean()
     mean_g = G.mean()
     mean_b = B.mean()
-    brightness = (mean_r + mean_g + mean_b) / 3.0
-    blue_bias  = mean_b - mean_r          # positive = bluer than red
-    grey_bias  = 1 - (np.std([mean_r, mean_g, mean_b]) / 128.0)  # near 1 = grey
+    brightness  = (mean_r + mean_g + mean_b) / 3.0
+    warm_bias   = mean_r - mean_b          # positive = warm/orange (bad for solar)
 
-    # ── Feature 2: uniformity — solar panels have repetitive grid, low chaos
-    # Measure spatial variance across blocks
-    block = arr.reshape(16, 8, 16, 8, 3).mean(axis=(1, 3))  # 16x16 block means
-    spatial_std = block.std()   # low = uniform surface
-
-    # ── Feature 3: not too colourful (not natural scene)
-    # Compute saturation in HSV space
-    maxc = arr.max(axis=2)
+    maxc = arr.max(axis=2) + 1e-5
     minc = arr.min(axis=2)
-    saturation = ((maxc - minc) / (maxc + 1e-5)).mean()  # low = grey/blue
+    mean_sat = ((maxc - minc) / maxc).mean()
 
-    # ── Decision: score each feature
+    all_block    = arr.reshape(16, 8, 16, 8, 3).mean(axis=(1, 3))
+    spatial_chaos = all_block.std()
+
     score = 0
-    # Dark image (solar panels absorb light, tend to be dark)
-    if brightness < 140:
-        score += 1
-    # Blue or grey dominant
-    if blue_bias > -10 or grey_bias > 0.85:
-        score += 1
-    # Low saturation (not colourful like a cat/food photo)
-    if saturation < 0.35:
-        score += 1
-    # Uniform surface (grid-like)
-    if spatial_std < 55:
-        score += 1
+    if warm_bias < 20:       score += 2   # not warm/orange toned
+    if brightness < 130:     score += 1   # dark (absorbs light)
+    if mean_sat < 0.30:      score += 2   # low colour saturation
+    if mean_b >= mean_r - 5: score += 1   # blue channel not suppressed
+    if spatial_chaos < 50:   score += 1   # uniform surface
 
-    # Need at least 3 out of 4 features to pass
-    return score >= 3
+    return score >= 4   # need 4 out of max 7
 
 def preprocess_image(image):
     from torchvision import transforms
