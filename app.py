@@ -811,6 +811,59 @@ effnet_model                                     = load_effnet()
 perf_model, perf_scaler, perf_meta, typical_vals = load_perf_model()
 lstm_model, lstm_scaler, lstm_meta, sample_data  = load_lstm()
 
+def is_solar_panel_image(image) -> bool:
+    """
+    Heuristic check — no external API needed.
+    Solar panels share 3 traits:
+      1. Predominantly blue/dark-blue or grey tones
+      2. High uniformity (low colour variance) — grid pattern
+      3. Rectangular-ish aspect ratio (not portrait photos)
+    Returns True if image is likely a solar panel.
+    """
+    import numpy as np
+    img = image.resize((128, 128))
+    arr = np.array(img).astype(float)  # H x W x 3  (RGB)
+
+    R, G, B = arr[:,:,0], arr[:,:,1], arr[:,:,2]
+
+    # ── Feature 1: blue/dark dominance
+    # Solar panels are typically dark blue, grey, or black
+    mean_r = R.mean()
+    mean_g = G.mean()
+    mean_b = B.mean()
+    brightness = (mean_r + mean_g + mean_b) / 3.0
+    blue_bias  = mean_b - mean_r          # positive = bluer than red
+    grey_bias  = 1 - (np.std([mean_r, mean_g, mean_b]) / 128.0)  # near 1 = grey
+
+    # ── Feature 2: uniformity — solar panels have repetitive grid, low chaos
+    # Measure spatial variance across blocks
+    block = arr.reshape(16, 8, 16, 8, 3).mean(axis=(1, 3))  # 16x16 block means
+    spatial_std = block.std()   # low = uniform surface
+
+    # ── Feature 3: not too colourful (not natural scene)
+    # Compute saturation in HSV space
+    maxc = arr.max(axis=2)
+    minc = arr.min(axis=2)
+    saturation = ((maxc - minc) / (maxc + 1e-5)).mean()  # low = grey/blue
+
+    # ── Decision: score each feature
+    score = 0
+    # Dark image (solar panels absorb light, tend to be dark)
+    if brightness < 140:
+        score += 1
+    # Blue or grey dominant
+    if blue_bias > -10 or grey_bias > 0.85:
+        score += 1
+    # Low saturation (not colourful like a cat/food photo)
+    if saturation < 0.35:
+        score += 1
+    # Uniform surface (grid-like)
+    if spatial_std < 55:
+        score += 1
+
+    # Need at least 3 out of 4 features to pass
+    return score >= 3
+
 def preprocess_image(image):
     from torchvision import transforms
     tf = transforms.Compose([
@@ -986,6 +1039,20 @@ with tab1:
             </div>""", unsafe_allow_html=True)
         else:
             image = Image.open(uploaded).convert("RGB")
+            with st.spinner(t("Verifying image...", "جاري التحقق من الصورة...")):
+                if not is_solar_panel_image(image):
+                    st.markdown(
+                        f'<div style="background:#2a1a10;border:1px solid #e74c3c;border-radius:12px;'
+                        f'padding:24px;text-align:center;margin-top:16px;">'
+                        f'<div style="font-size:2rem;margin-bottom:10px;">🚫</div>'
+                        f'<div style="color:#e74c3c;font-weight:700;font-size:1.1rem;margin-bottom:8px;">'
+                        f'{t("Not a Solar Panel Image", "الصورة ليست للوح شمسي")}</div>'
+                        f'<div style="color:{TXT_M};font-size:0.88rem;">'
+                        f'{t("Please upload a clear image of a solar panel.", "يرجى رفع صورة واضحة للوح شمسي.")}'
+                        f'</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.stop()
             with st.spinner(t("Scanning panel...","جاري فحص اللوح...")):
                 tensor = preprocess_image(image)
                 with torch.no_grad():
@@ -999,7 +1066,7 @@ with tab1:
             sev        = info["severity"]
 
             # Reject non-solar images if confidence is too low
-            CONFIDENCE_THRESHOLD = 0.85
+            CONFIDENCE_THRESHOLD = 0.75
             if confidence < CONFIDENCE_THRESHOLD:
                 st.markdown(
                     f'<div style="background:#2a1a10;border:1px solid #e74c3c;border-radius:12px;'
