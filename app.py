@@ -998,6 +998,22 @@ with tab1:
             display    = info["display_ar"] if IS_AR else info["display_en"]
             sev        = info["severity"]
 
+            # Reject non-solar images if confidence is too low
+            CONFIDENCE_THRESHOLD = 0.85
+            if confidence < CONFIDENCE_THRESHOLD:
+                st.markdown(
+                    f'<div style="background:#2a1a10;border:1px solid #e74c3c;border-radius:12px;'
+                    f'padding:24px;text-align:center;margin-top:16px;">'
+                    f'<div style="font-size:2rem;margin-bottom:10px;">🚫</div>'
+                    f'<div style="color:#e74c3c;font-weight:700;font-size:1.1rem;margin-bottom:8px;">'
+                    f'{t("Not a Solar Panel Image", "الصورة ليست للوح شمسي")}</div>'
+                    f'<div style="color:{TXT_M};font-size:0.88rem;">'
+                    f'{t("The uploaded image does not appear to be a solar panel. Please upload a clear image of a solar panel for accurate defect detection.", "الصورة المرفوعة لا تبدو للوح شمسي. يرجى رفع صورة واضحة للوح شمسي للكشف الدقيق عن العيوب.")}'
+                    f'</div></div>',
+                    unsafe_allow_html=True,
+                )
+                st.stop()
+
             import hashlib as _hl
             file_hash = _hl.md5(uploaded.getvalue()).hexdigest()
 
