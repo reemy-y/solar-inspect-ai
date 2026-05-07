@@ -1043,6 +1043,17 @@ with tab1:
             display    = info["display_ar"] if IS_AR else info["display_en"]
             sev        = info["severity"]
 
+            # Warn if confidence is low — likely not a solar panel image
+            if confidence < 0.60:
+                st.markdown(
+                    f'<div style="background:#1a1a2e;border:1px solid #f5a623;border-radius:10px;'
+                    f'padding:12px 18px;margin-bottom:12px;font-size:0.85rem;color:#f5a623;">'
+                    f'⚠️ <b>{t("Low confidence — this may not be a solar panel image.","ثقة منخفضة — قد لا تكون هذه الصورة للوح شمسي.")}</b> '
+                    f'{t("Please upload a clear solar panel image for accurate detection.","يرجى رفع صورة واضحة للوح شمسي للحصول على نتائج دقيقة.")}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
 
 
             import hashlib as _hl
