@@ -846,13 +846,13 @@ def is_solar_panel_image(image) -> bool:
     spatial_chaos = all_block.std()
 
     score = 0
-    if warm_bias < 20:       score += 2   # not warm/orange toned
-    if brightness < 130:     score += 1   # dark (absorbs light)
-    if mean_sat < 0.30:      score += 2   # low colour saturation
-    if mean_b >= mean_r - 5: score += 1   # blue channel not suppressed
-    if spatial_chaos < 50:   score += 1   # uniform surface
+    if warm_bias < 40:        score += 2   # not strongly warm/orange toned
+    if brightness < 160:      score += 1   # not overly bright
+    if mean_sat < 0.45:       score += 2   # not highly colourful
+    if mean_b >= mean_r - 20: score += 1   # blue channel present
+    if spatial_chaos < 65:    score += 1   # reasonably uniform surface
 
-    return score >= 4   # need 4 out of max 7
+    return score >= 3   # need 3 out of max 7 (more permissive)
 
 def preprocess_image(image):
     from torchvision import transforms
