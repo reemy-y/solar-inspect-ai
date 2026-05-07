@@ -216,21 +216,6 @@ def db_get_scans(email: str, admin: bool = False) -> list:
         s = str(val)
         return s[:16] if len(s) >= 16 else s
 
-    return [
-        {
-            "email":      row["email"],
-            "time":       _fmt_time(row["scanned_at"]),
-            "class":      row["defect_type"],
-            "display_en": row["display_en"],
-            "display_ar": row["display_ar"],
-            "confidence": float(row["confidence"]) if row["confidence"] is not None else 0.0,
-            "severity":   row["severity"],
-            "icon":       row["icon"],
-            "source":     "db",
-        }
-        for row in rows
-    ]
-
     def _norm_conf(val):
         """Confidence in DB is stored 0–1 (e.g. 0.9956). Return as fraction for display."""
         try:
@@ -241,17 +226,17 @@ def db_get_scans(email: str, admin: bool = False) -> list:
 
     return [
         {
-            "email":      r["email"],
-            "time":       _fmt_time(r["scanned_at"]),
-            "class":      r["defect_type"],
-            "display_en": r["display_en"],
-            "display_ar": r["display_ar"],
-            "confidence": _norm_conf(r["confidence"]),
-            "severity":   r["severity"],
-            "icon":       r["icon"],
+            "email":      row["email"],
+            "time":       _fmt_time(row["scanned_at"]),
+            "class":      row["defect_type"],
+            "display_en": row["display_en"],
+            "display_ar": row["display_ar"],
+            "confidence": _norm_conf(row["confidence"]),
+            "severity":   row["severity"],
+            "icon":       row["icon"],
             "source":     "db",
         }
-        for r in rows
+        for row in rows
     ]
 
 def db_delete_scans(email: str):
@@ -262,12 +247,6 @@ def db_delete_scans(email: str):
         conn.commit()
     finally:
         conn.close()
-
-def _get_secret(key, default=""):
-    try:
-        return st.secrets[key]
-    except Exception:
-        return os.environ.get(key, default)
 
 def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
     """
@@ -317,17 +296,6 @@ def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
             except Exception:
                 conf = 0.0
             ts_raw = row.get("timestamp", "")
-            # Guard against NaN/None/empty
-            # OLD
-            try:
-                if pd.isna(ts_raw) or str(ts_raw).strip().lower() in ("", "nan", "none", "nat"):
-                    ts_str = "—"
-                else:
-                    ts_str = str(ts_raw)[:16]
-            except Exception:
-                ts_str = "—"
-
-# NEW
             try:
                 if pd.isna(ts_raw) or str(ts_raw).strip().lower() in ("", "nan", "none", "nat"):
                     continue  # skip this row entirely — DB version will show it
@@ -811,13 +779,17 @@ effnet_model                                     = load_effnet()
 perf_model, perf_scaler, perf_meta, typical_vals = load_perf_model()
 lstm_model, lstm_scaler, lstm_meta, sample_data  = load_lstm()
 
+# ─────────────────────────────────────────────────────────────────────
+# FIXED: Solar panel image validator — loosened thresholds so real
+# panels (dusty, bright, reflective) are no longer falsely rejected.
+# ─────────────────────────────────────────────────────────────────────
 def is_solar_panel_image(image) -> bool:
     """
     Heuristic solar panel detector — no external API.
-    Scores image on 5 traits common to solar panels:
-    dark, blue/grey tones, low saturation, not warm, spatially uniform.
+    Scores image on traits common to solar panels.
+    Thresholds are intentionally lenient; the model confidence
+    check below acts as the second line of defence.
     """
-    import numpy as np
     img = image.resize((128, 128))
     arr = np.array(img).astype(float)
     R, G, B = arr[:,:,0], arr[:,:,1], arr[:,:,2]
@@ -826,7 +798,7 @@ def is_solar_panel_image(image) -> bool:
     mean_g = G.mean()
     mean_b = B.mean()
     brightness  = (mean_r + mean_g + mean_b) / 3.0
-    warm_bias   = mean_r - mean_b          # positive = warm/orange (bad for solar)
+    warm_bias   = mean_r - mean_b   # positive = warm/orange
 
     maxc = arr.max(axis=2) + 1e-5
     minc = arr.min(axis=2)
@@ -836,13 +808,19 @@ def is_solar_panel_image(image) -> bool:
     spatial_chaos = all_block.std()
 
     score = 0
-    if warm_bias < 20:       score += 2   # not warm/orange toned
-    if brightness < 130:     score += 1   # dark (absorbs light)
-    if mean_sat < 0.30:      score += 2   # low colour saturation
-    if mean_b >= mean_r - 5: score += 1   # blue channel not suppressed
-    if spatial_chaos < 50:   score += 1   # uniform surface
+    # Loosened from 20 → 35: dusty/dirty panels skew warm
+    if warm_bias < 35:        score += 2
+    # Loosened from 130 → 180: glass panels can be bright/reflective
+    if brightness < 180:      score += 1
+    # Loosened from 0.30 → 0.45: allow slightly more colour variation
+    if mean_sat < 0.45:       score += 2
+    # Loosened from -5 → -15: more lenient blue-channel check
+    if mean_b >= mean_r - 15: score += 1
+    # Loosened from 50 → 70: panels have visible grid lines
+    if spatial_chaos < 70:    score += 1
 
-    return score >= 4   # need 4 out of max 7
+    # Lowered passing bar from 4 → 3 (out of max 7)
+    return score >= 3
 
 def preprocess_image(image):
     from torchvision import transforms
@@ -1019,20 +997,8 @@ with tab1:
             </div>""", unsafe_allow_html=True)
         else:
             image = Image.open(uploaded).convert("RGB")
-            with st.spinner(t("Verifying image...", "جاري التحقق من الصورة...")):
-                if not is_solar_panel_image(image):
-                    st.markdown(
-                        f'<div style="background:#2a1a10;border:1px solid #e74c3c;border-radius:12px;'
-                        f'padding:24px;text-align:center;margin-top:16px;">'
-                        f'<div style="font-size:2rem;margin-bottom:10px;">🚫</div>'
-                        f'<div style="color:#e74c3c;font-weight:700;font-size:1.1rem;margin-bottom:8px;">'
-                        f'{t("Not a Solar Panel Image", "الصورة ليست للوح شمسي")}</div>'
-                        f'<div style="color:{TXT_M};font-size:0.88rem;">'
-                        f'{t("Please upload a clear image of a solar panel.", "يرجى رفع صورة واضحة للوح شمسي.")}'
-                        f'</div></div>',
-                        unsafe_allow_html=True,
-                    )
-                    st.stop()
+
+            # ── Run the model first so we have confidence before deciding
             with st.spinner(t("Scanning panel...","جاري فحص اللوح...")):
                 tensor = preprocess_image(image)
                 with torch.no_grad():
@@ -1041,13 +1007,31 @@ with tab1:
             pred_idx   = int(np.argmax(probs))
             pred_class = CLASSES[pred_idx]
             confidence = float(probs[pred_idx])
-            info       = DEFECT_INFO[pred_class]
-            display    = info["display_ar"] if IS_AR else info["display_en"]
-            sev        = info["severity"]
 
-            # Reject non-solar images if confidence is too low
-            CONFIDENCE_THRESHOLD = 0.75
-            if confidence < CONFIDENCE_THRESHOLD:
+            # ── FIXED: dual-gate validation
+            # Gate 1 — pixel heuristic (lenient, just catches obviously wrong images)
+            heuristic_pass = is_solar_panel_image(image)
+            # Gate 2 — model confidence (lowered from 0.75 → 0.50)
+            CONFIDENCE_THRESHOLD = 0.50
+            model_confident = confidence >= CONFIDENCE_THRESHOLD
+
+            # Reject only when BOTH gates fail
+            if not heuristic_pass and not model_confident:
+                st.markdown(
+                    f'<div style="background:#2a1a10;border:1px solid #e74c3c;border-radius:12px;'
+                    f'padding:24px;text-align:center;margin-top:16px;">'
+                    f'<div style="font-size:2rem;margin-bottom:10px;">🚫</div>'
+                    f'<div style="color:#e74c3c;font-weight:700;font-size:1.1rem;margin-bottom:8px;">'
+                    f'{t("Not a Solar Panel Image", "الصورة ليست للوح شمسي")}</div>'
+                    f'<div style="color:{TXT_M};font-size:0.88rem;">'
+                    f'{t("Please upload a clear image of a solar panel.", "يرجى رفع صورة واضحة للوح شمسي.")}'
+                    f'</div></div>',
+                    unsafe_allow_html=True,
+                )
+                st.stop()
+
+            # Reject when model is not confident regardless of heuristic
+            if not model_confident:
                 st.markdown(
                     f'<div style="background:#2a1a10;border:1px solid #e74c3c;border-radius:12px;'
                     f'padding:24px;text-align:center;margin-top:16px;">'
@@ -1060,6 +1044,10 @@ with tab1:
                     unsafe_allow_html=True,
                 )
                 st.stop()
+
+            info    = DEFECT_INFO[pred_class]
+            display = info["display_ar"] if IS_AR else info["display_en"]
+            sev     = info["severity"]
 
             import hashlib as _hl
             file_hash = _hl.md5(uploaded.getvalue()).hexdigest()
@@ -1243,7 +1231,6 @@ with tab3:
             INVERTER_EFF      = 0.96
             TEMP_COEFF        = -0.004
             now        = datetime.now()
-            # Start from the NEXT 15-min slot so all points are in the future
             mins_past  = now.minute % 15
             start_offset = (15 - mins_past) if mins_past > 0 else 15
             base_dt    = now.replace(second=0, microsecond=0)
@@ -1304,7 +1291,6 @@ with tab4:
             st.error(f"Could not load history: {e}")
             user_history = []
 
-        # Build email list for filter (all users if admin)
         if is_admin:
             all_emails = sorted(set(h["email"] for h in user_history if h["email"]))
             filter_opts = [t("All Users","جميع المستخدمين")] + all_emails
