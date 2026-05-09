@@ -521,6 +521,19 @@ small.st-emotion-cache-1gulkj5,
 .stSelectbox label, [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] {{
     color:{TXT_S} !important; font-size:0.92rem !important; font-weight:500 !important;
 }}
+/* Fix blurry dropdown text */
+.stSelectbox div[data-baseweb="select"] *,
+[data-baseweb="popover"] *,
+[data-baseweb="menu"] *,
+[role="option"] * {{
+    -webkit-font-smoothing: antialiased !important;
+    -moz-osx-font-smoothing: grayscale !important;
+    text-rendering: optimizeLegibility !important;
+    font-family: 'Syne', sans-serif !important;
+    color: {TXT} !important;
+    opacity: 1 !important;
+    filter: none !important;
+}}
 .stButton>button {{
     background-color:{BG_CARD}; color:{TXT};
     border:1px solid {BORDER}; border-radius:8px;
