@@ -1292,7 +1292,6 @@ with tab4:
     else:
         try:
             user_history = get_full_history(st.session_state.auth_email, admin=is_admin)
-            user_history = user_history[:30]  # last 30 scans only
         except Exception as e:
             st.error(f"Could not load history: {e}")
             user_history = []
@@ -1304,6 +1303,9 @@ with tab4:
             sel_user = st.selectbox(t("Filter by user","تصفية حسب المستخدم"), filter_opts, key="hist_filter")
             if sel_user not in ("All Users", "جميع المستخدمين"):
                 user_history = [h for h in user_history if h["email"] == sel_user]
+
+        # Apply 30 scan limit after filtering
+        user_history = user_history[:30]
 
         if not user_history:
             st.markdown(f'<div style="text-align:center;color:{TXT_M};padding:40px;"><div style="font-size:2.5rem;margin-bottom:12px;">📋</div><div>{t("No scans yet.","لا توجد فحوصات بعد.")}</div></div>', unsafe_allow_html=True)
