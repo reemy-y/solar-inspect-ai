@@ -301,8 +301,6 @@ def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
         if r.status_code != 200:
             return []
         df = pd.read_csv(StringIO(r.text))
-        if "source" in df.columns:
-            df = df[df["source"] == "scan"]
         if not admin and "panel_id" in df.columns:
             df = df[df["panel_id"] == email]
         results = []
