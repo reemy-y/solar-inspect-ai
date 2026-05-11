@@ -1301,9 +1301,8 @@ with tab3:
             base_dt      = now.replace(second=0, microsecond=0)
             total_steps  = steps * 4   # 15-min intervals
 
-           import datetime as _dt
-           for step in range(total_steps):
-                future_dt = base_dt + _dt.timedelta(
+            for step in range(total_steps):
+                future_dt      = base_dt + __import__('datetime').timedelta(minutes=start_offset + step * 15)
                 hour_of_day    = future_dt.hour
                 minute_of_hour = future_dt.minute
 
