@@ -8,7 +8,55 @@ from PIL import Image
 from datetime import datetime
 from fpdf import FPDF
 from dataset_tab import render_dataset_tab
-
+import torch.nn as nn
+from torchvision import models as tv_models
+ 
+class MultiHeadSelfAttention(nn.Module):
+    """Multi-Head Self-Attention layer added on top of VGG19_BN backbone."""
+    def __init__(self, in_channels, num_heads=8, dropout=0.1):
+        super().__init__()
+        assert in_channels % num_heads == 0, "in_channels must be divisible by num_heads"
+        self.mha     = nn.MultiheadAttention(
+                           embed_dim=in_channels, num_heads=num_heads,
+                           dropout=dropout, batch_first=True)
+        self.dropout = nn.Dropout(dropout)
+        self.norm    = nn.LayerNorm(in_channels)
+ 
+    def forward(self, x):
+        b, c, h, w = x.size()
+        x_flat   = x.view(b, c, h * w).permute(0, 2, 1)   # [B, H*W, C]
+        attn_out, _ = self.mha(x_flat, x_flat, x_flat)
+        attn_out = self.dropout(attn_out)
+        attn_out = self.norm(attn_out + x_flat)
+        return attn_out.permute(0, 2, 1).view(b, c, h, w)  # back to [B, C, H, W]
+ 
+ 
+class VGG19_MHSA_Finetuned(nn.Module):
+    """VGG19_BN backbone + Multi-Head Self-Attention + lightweight classifier."""
+    def __init__(self, num_classes=6, num_heads=8, dropout=0.7):
+        super().__init__()
+        vgg_base = tv_models.vgg19_bn(weights=None)           # weights loaded from .pth
+ 
+        # Freeze all backbone layers (same as during training)
+        for param in vgg_base.features.parameters():
+            param.requires_grad = False
+ 
+        self.features   = vgg_base.features
+        self.mhsa       = MultiHeadSelfAttention(512, num_heads=num_heads, dropout=0.1)
+        self.avgpool    = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(p=dropout),
+            nn.Linear(512, num_classes),
+        )
+ 
+    def forward(self, x):
+        x = self.features(x)
+        x = self.mhsa(x)
+        x = self.avgpool(x)
+        x = self.classifier(x)
+        return x
+    
 st.set_page_config(
     page_title="SolarInspect AI",
     page_icon="☀️",
@@ -768,23 +816,27 @@ BADGE = {
 
 @st.cache_resource
 def load_effnet():
-    path = "best_resnet50.pth"
+    path = "best_vgg19_mhsa_final.pth"
     if not os.path.exists(path):
         try:
             import requests
-            url = "https://huggingface.co/reem-y/solar-resnet50/resolve/main/best_resnet50.pth"
-
-            r = requests.get(url, stream=True, timeout=120)
+            # UPDATE this URL after you upload the .pth to Hugging Face
+            url = "https://huggingface.co/reem-y/solar-vgg19-mhsa/resolve/main/best_vgg19_mhsa_final.pth"
+            r = requests.get(url, stream=True, timeout=180)
             with open(path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
         except Exception as e:
             st.error(f"Could not download model: {e}")
             return None
-    m = timm.create_model("resnet50", pretrained=False, num_classes=6)
-    m.load_state_dict(torch.load(path, map_location="cpu"))
-    m.eval()
-    return m
+    try:
+        m = VGG19_MHSA_Finetuned(num_classes=6)
+        m.load_state_dict(torch.load(path, map_location="cpu", weights_only=False))
+        m.eval()
+        return m
+    except Exception as e:
+        st.error(f"Could not load VGG19_MHSA model: {e}")
+        return None
 
 @st.cache_resource
 def load_perf_model():
@@ -1010,7 +1062,7 @@ else:
 # ═══════════════════════════════════════════════════════════════
 with tab1:
     if effnet_model is None:
-        st.error(t("Model file not found: best_resnet50.pth","ملف النموذج غير موجود."))
+         st.error(t("Model file not found: best_vgg19_mhsa_final.pth","ملف النموذج غير موجود."))
     else:
         uploaded = st.file_uploader(
             t("Upload solar panel image","رفع صورة اللوح الشمسي"),
@@ -1224,51 +1276,96 @@ with tab2:
 # ═══════════════════════════════════════════════════════════════
 with tab3:
     st.markdown(f'<div class="section-title">{t("SOLAR POWER FORECAST","توقع الطاقة الشمسية")}</div>', unsafe_allow_html=True)
-    f1,f2,f3 = st.columns(3)
-    with f1: f_irr = st.slider(t("Irradiation","الإشعاع"),       0.0,1.5,0.7,0.05, key="fc_irr")
-    with f2: f_amb = st.slider(t("Ambient Temp (C)","درجة المحيط"),15.0,45.0,28.0,0.5, key="fc_amb")
-    with f3: f_mod = st.slider(t("Module Temp (C)","درجة اللوح"), 20.0,70.0,40.0,0.5, key="fc_mod")
-    steps = st.slider(t("Forecast hours ahead","ساعات التوقع"),1,12,6, key="fc_steps")
+
+    f1, f2, f3 = st.columns(3)
+    with f1: f_irr = st.slider(t("Irradiation","الإشعاع"),         0.0, 1.5, 0.7, 0.05, key="fc_irr")
+    with f2: f_amb = st.slider(t("Ambient Temp (C)","درجة المحيط"), 15.0, 45.0, 28.0, 0.5, key="fc_amb")
+    with f3: f_mod = st.slider(t("Module Temp (C)","درجة اللوح"),   20.0, 70.0, 40.0, 0.5, key="fc_mod")
+
+    f4, f5 = st.columns(2)
+    with f4: f_cap = st.number_input(t("Panel Capacity (kW)","سعة اللوح"), min_value=0.1, max_value=1000.0, value=3.5, step=0.1, key="fc_cap")
+    with f5: f_eff = st.slider(t("Inverter Efficiency (%)","كفاءة المحول"), 80, 100, 96, 1, key="fc_eff")
+
+    steps = st.slider(t("Forecast hours ahead","ساعات التوقع"), 1, 12, 6, key="fc_steps")
+
     if st.button(t("Generate Forecast","توليد التوقع"), use_container_width=True):
         with st.spinner(t("Generating forecast...","جاري توليد التوقع...")):
-            forecasts, hours = [], []
-            PANEL_CAPACITY_KW = 3.5
-            INVERTER_EFF      = 0.96
-            TEMP_COEFF        = -0.004
-            now        = datetime.now()
-            # Start from the NEXT 15-min slot so all points are in the future
-            mins_past  = now.minute % 15
-            start_offset = (15 - mins_past) if mins_past > 0 else 15
-            base_dt    = now.replace(second=0, microsecond=0)
 
-            for step in range(steps * 4):
-                future_dt     = base_dt + __import__('datetime').timedelta(minutes=start_offset + step * 15)
-                hour_of_day   = future_dt.hour
+            forecasts, hours = [], []
+            INVERTER_EFF = f_eff / 100.0
+            TEMP_COEFF   = -0.004   # typical crystalline silicon temp coefficient
+
+            now          = datetime.now()
+            mins_past    = now.minute % 15
+            start_offset = (15 - mins_past) if mins_past > 0 else 15
+            base_dt      = now.replace(second=0, microsecond=0)
+            total_steps  = steps * 4   # 15-min intervals
+
+            for step in range(total_steps):
+                future_dt      = base_dt + __import__('datetime').timedelta(
+                                     minutes=start_offset + step * 15)
+                hour_of_day    = future_dt.hour
                 minute_of_hour = future_dt.minute
+
                 if 6 <= hour_of_day <= 19:
+                    # Sinusoidal solar angle (6 AM = 0, noon = peak, 7 PM = 0)
                     angle        = (hour_of_day - 6 + minute_of_hour / 60) / 13 * np.pi
                     solar_factor = max(0.0, float(np.sin(angle)))
                 else:
                     solar_factor = 0.0
-                temp_factor = 1 + TEMP_COEFF * max(0, f_mod - 25)
-                ac_power_fc = max(0.0, f_irr * PANEL_CAPACITY_KW * solar_factor * temp_factor * INVERTER_EFF + float(np.random.normal(0, 0.01)))
+
+                # Temperature derating: panels lose ~0.4% per °C above 25°C
+                temp_factor  = 1 + TEMP_COEFF * max(0, f_mod - 25)
+
+                # AC power = irradiation × capacity × solar angle × temp derating × inverter efficiency
+                ac_power_fc  = max(0.0,
+                    f_irr * f_cap * solar_factor * temp_factor * INVERTER_EFF
+                    + float(np.random.normal(0, 0.005 * f_cap))   # small realistic noise
+                )
                 forecasts.append(round(ac_power_fc, 3))
                 hours.append(future_dt.strftime("%H:%M"))
-        import plotly.graph_objects as go
-        fig=go.Figure()
-        fig.add_trace(go.Scatter(x=hours,y=forecasts,mode="lines+markers",
-            line=dict(color="#f5a623",width=3),marker=dict(size=6,color="#f5a623"),
-            fill="tozeroy",fillcolor="rgba(245,166,35,0.1)"))
-        fig.update_layout(height=400,paper_bgcolor=BG_CARD,plot_bgcolor=BG_CARD,
-            font=dict(color=TXT),xaxis=dict(gridcolor=BORDER,color=TXT_M),
-            yaxis=dict(gridcolor=BORDER,color=TXT_M,title=t("AC Power (kW)","طاقة AC")),
-            margin=dict(l=20,r=20,t=20,b=40))
-        st.plotly_chart(fig, use_container_width=True, key="fc_chart")
-        s1,s2,s3=st.columns(3)
-        for col,le,la,val,unit,color in [(s1,"AVG POWER","متوسط الطاقة",np.mean(forecasts),"kW","#f5a623"),(s2,"PEAK POWER","ذروة الطاقة",np.max(forecasts),"kW","#e74c3c"),(s3,"EST. ENERGY","الطاقة المتوقعة",sum(forecasts)*0.25/1000,"MWh","#2ecc71")]:
-            with col:
-                st.markdown(f'<div class="metric-card" style="text-align:center;"><div class="metric-label">{la if IS_AR else le}</div><div class="metric-value" style="color:{color};">{val:,.2f}</div><div style="font-size:0.8rem;color:{TXT_M};margin-top:4px;">{unit}</div></div>', unsafe_allow_html=True)
 
+        # ── Chart ───────────────────────────────────────────────────────
+        import plotly.graph_objects as go
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=hours, y=forecasts,
+            mode="lines+markers",
+            line=dict(color="#f5a623", width=3),
+            marker=dict(size=6, color="#f5a623"),
+            fill="tozeroy", fillcolor="rgba(245,166,35,0.1)",
+        ))
+        fig.update_layout(
+            height=400,
+            paper_bgcolor=BG_CARD, plot_bgcolor=BG_CARD,
+            font=dict(color=TXT),
+            xaxis=dict(gridcolor=BORDER, color=TXT_M),
+            yaxis=dict(gridcolor=BORDER, color=TXT_M,
+                       title=t("AC Power (kW)", "طاقة AC (كيلوواط)")),
+            margin=dict(l=20, r=20, t=20, b=40),
+        )
+        st.plotly_chart(fig, use_container_width=True, key="fc_chart")
+
+        # ── Summary metrics ─────────────────────────────────────────────
+        s1, s2, s3 = st.columns(3)
+        avg_power  = float(np.mean(forecasts))
+        peak_power = float(np.max(forecasts))
+        est_energy = sum(forecasts) * 0.25   # kWh (each step = 15 min = 0.25 h)
+
+        for col, le, la, val, unit, color in [
+            (s1, "AVG POWER",   "متوسط الطاقة",   avg_power,  "kW",  "#f5a623"),
+            (s2, "PEAK POWER",  "ذروة الطاقة",    peak_power, "kW",  "#e74c3c"),
+            (s3, "EST. ENERGY", "الطاقة المتوقعة", est_energy, "kWh", "#2ecc71"),
+        ]:
+            with col:
+                st.markdown(
+                    f'<div class="metric-card" style="text-align:center;">'
+                    f'<div class="metric-label">{la if IS_AR else le}</div>'
+                    f'<div class="metric-value" style="color:{color};">{val:,.2f}</div>'
+                    f'<div style="font-size:0.8rem;color:{TXT_M};margin-top:4px;">{unit}</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 # ═══════════════════════════════════════════════════════════════
 # TAB 4 — HISTORY
 # ═══════════════════════════════════════════════════════════════
