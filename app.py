@@ -1295,15 +1295,15 @@ with tab3:
             INVERTER_EFF = f_eff / 100.0
             TEMP_COEFF   = -0.004   # typical crystalline silicon temp coefficient
 
-            now          = datetime.now()
+            now = _now_cairo()
             mins_past    = now.minute % 15
             start_offset = (15 - mins_past) if mins_past > 0 else 15
             base_dt      = now.replace(second=0, microsecond=0)
             total_steps  = steps * 4   # 15-min intervals
 
             for step in range(total_steps):
-                future_dt      = base_dt + __import__('datetime').timedelta(
-                                     minutes=start_offset + step * 15)
+                import datetime as _dt
+                    future_dt = base_dt + _dt.timedelta(
                 hour_of_day    = future_dt.hour
                 minute_of_hour = future_dt.minute
 
