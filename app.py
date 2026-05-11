@@ -720,7 +720,10 @@ if not is_logged_in and st.session_state.get("_show_login", False):
                             st.error(t("Passwords do not match.","كلمتا المرور غير متطابقتين."))
                         else:
                             ok2, msg2 = auth_signup(ne, np1)
-                            st.success(msg2) if ok2 else st.error(msg2)
+                            if ok2:
+                                st.success(msg2)
+                            else:
+                                st.error(msg2)
 
 # ─────────────────────────────────────────────────────────────────────
 # 7. GUEST BANNER — one clean bar with single login button
