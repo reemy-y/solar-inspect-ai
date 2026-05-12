@@ -1210,7 +1210,7 @@ with tab1:
                             panel_age=s_age if s_age > 0 else None,
                         )
                         st.session_state.saved_hashes.add(file_hash)
-                        st.toast(t("✅ Scan saved to your history", "✅ تم حفظ الفحص في سجلك"), icon="✅")
+                        st.toast(t(" Scan saved to your history", " تم حفظ الفحص في سجلك"), icon="✅")
                         st.rerun()
             else:
                 st.markdown(
