@@ -69,7 +69,7 @@ st.set_page_config(
 # ─────────────────────────────────────────────────────────────────────
 import secrets as _secrets
 
-ADMIN_EMAIL = "reemya185@gmail.com"
+ADMIN_EMAIL = "admin@gmail.com"
 TOKEN_KEY   = "solar_session_token"
 
 def _get_secret(key, default=""):
