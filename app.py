@@ -908,11 +908,30 @@ def is_solar_panel_image(image) -> bool:
     return score >= 3   # need 3 out of max 7 (more permissive)
 
 def preprocess_image(image):
+    import cv2
+    import numpy as np
     from torchvision import transforms
+
+    # Convert PIL to OpenCV BGR (same as training pipeline)
+    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+
+    # Step 1: CLAHE on Y channel in YUV space (clipLimit=2.0, tileGridSize=8x8)
+    img_yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    img_yuv[:, :, 0] = clahe.apply(img_yuv[:, :, 0])
+    img = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
+
+    # Step 2: NL-Means denoising (h=10, same as training)
+    img = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
+
+    # Convert back to PIL RGB for torchvision transforms
+    image = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+
+    # Step 3: Resize, tensor, normalise (ImageNet stats)
     tf = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
-        transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225]),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
     ])
     return tf(image).unsqueeze(0)
 
