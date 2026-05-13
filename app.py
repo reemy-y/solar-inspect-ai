@@ -1,6 +1,3 @@
-# ─────────────────────────────────────────────────────────────────────
-# 1. IMPORTS & PAGE CONFIG
-# ─────────────────────────────────────────────────────────────────────
 import streamlit as st
 import torch, timm, numpy as np, os, re, json, joblib, pandas as pd
 import unicodedata as _ud, hashlib, psycopg2, psycopg2.extras
@@ -24,20 +21,20 @@ class MultiHeadSelfAttention(nn.Module):
  
     def forward(self, x):
         b, c, h, w = x.size()
-        x_flat   = x.view(b, c, h * w).permute(0, 2, 1)   # [B, H*W, C]
+        x_flat   = x.view(b, c, h * w).permute(0, 2, 1)   
         attn_out, _ = self.mha(x_flat, x_flat, x_flat)
         attn_out = self.dropout(attn_out)
         attn_out = self.norm(attn_out + x_flat)
-        return attn_out.permute(0, 2, 1).view(b, c, h, w)  # back to [B, C, H, W]
+        return attn_out.permute(0, 2, 1).view(b, c, h, w)  
  
  
 class VGG19_MHSA_Finetuned(nn.Module):
     """VGG19_BN backbone + Multi-Head Self-Attention + lightweight classifier."""
     def __init__(self, num_classes=6, num_heads=8, dropout=0.7):
         super().__init__()
-        vgg_base = tv_models.vgg19_bn(weights=None)           # weights loaded from .pth
+        vgg_base = tv_models.vgg19_bn(weights=None)           
  
-        # Freeze all backbone layers (same as during training)
+        
         for param in vgg_base.features.parameters():
             param.requires_grad = False
  
@@ -64,9 +61,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ─────────────────────────────────────────────────────────────────────
-# 2. AUTH & DATABASE — PostgreSQL (Supabase) + persistent sessions
-# ─────────────────────────────────────────────────────────────────────
+
 import secrets as _secrets
 
 ADMIN_EMAIL = "admin@gmail.com"
@@ -93,7 +88,6 @@ def _hash(password: str) -> str:
     return hashlib.sha256(password.encode()).hexdigest()
 
 def _now_cairo() -> datetime:
-    """Return current datetime in Cairo timezone (UTC+2 or UTC+3 with DST)."""
     try:
         import zoneinfo
         from datetime import timezone as _tz
@@ -363,8 +357,7 @@ def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
             except Exception:
                 conf = 0.0
             ts_raw = row.get("timestamp", "")
-            # Guard against NaN/None/empty
-            # OLD
+            
             try:
                 if pd.isna(ts_raw) or str(ts_raw).strip().lower() in ("", "nan", "none", "nat"):
                     ts_str = "—"
@@ -373,14 +366,14 @@ def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
             except Exception:
                 ts_str = "—"
 
-# NEW
+
             try:
                 if pd.isna(ts_raw) or str(ts_raw).strip().lower() in ("", "nan", "none", "nat"):
-                    continue  # skip this row entirely — DB version will show it
+                    continue  
                 else:
                     ts_str = str(ts_raw)[:16]
             except Exception:
-                continue  # skip rows with unparseable timestamps
+                continue  
             results.append({
                 "email":      str(row.get("panel_id", "")),
                 "time":       ts_str,
@@ -392,7 +385,7 @@ def _load_csv_scans_as_history(email: str, admin: bool = False) -> list:
                 "icon":       icon,
                 "source":     "csv",
             })
-        # Sort by time descending
+       
         results.sort(key=lambda x: x["time"], reverse=True)
         return results
     except Exception:
@@ -402,7 +395,7 @@ def get_full_history(email: str, admin: bool = False) -> list:
     """Combine DB scans + CSV scans, deduplicate by (email+defect+time), sort by time desc."""
     db_scans  = db_get_scans(email, admin=admin)
     csv_scans = _load_csv_scans_as_history(email, admin=admin)
-    # Deduplicate: DB scans take priority, skip CSV entries already in DB
+    
     seen = set()
     for h in db_scans:
         t = h["time"] if len(h["time"]) >= 13 else h["time"]
@@ -452,9 +445,7 @@ def db_get_all_users() -> list:
         for r in rows
     ]
 
-# ─────────────────────────────────────────────────────────────────────
-# 3. SESSION STATE INIT
-# ─────────────────────────────────────────────────────────────────────
+
 for key, default in [
     ("lang",          "en"),
     ("history",       []),
@@ -468,7 +459,7 @@ for key, default in [
     if key not in st.session_state:
         st.session_state[key] = default
 
-# ── Auto-login via token
+
 if not st.session_state.logged_in and st.session_state.session_token:
     _email = _validate_token(st.session_state.session_token)
     if _email:
@@ -476,9 +467,7 @@ if not st.session_state.logged_in and st.session_state.session_token:
         st.session_state.auth_email = _email
         st.session_state.user_email = _email
 
-# ─────────────────────────────────────────────────────────────────────
-# 4. THEME
-# ─────────────────────────────────────────────────────────────────────
+
 def t(en, ar):
     return ar if st.session_state.lang == "ar" else en
 
@@ -644,9 +633,7 @@ small.st-emotion-cache-1gulkj5,
 </style>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────────────────────────────
-# 5. HEADER — always visible (guest + logged in)
-# ─────────────────────────────────────────────────────────────────────
+
 is_logged_in = st.session_state.logged_in
 is_admin     = is_logged_in and _get_role(st.session_state.auth_email) == "admin"
 
@@ -680,16 +667,14 @@ with col_ctrl:
                 st.session_state.history       = []
                 st.rerun()
     else:
-        # Guest — only language toggle in header
+        
         _, bc1 = st.columns([1, 1])
         with bc1:
             if st.button(f"🌐 {lang_label}", use_container_width=True, key="btn_lang"):
                 st.session_state.lang = "ar" if st.session_state.lang == "en" else "en"
                 st.rerun()
 
-# ─────────────────────────────────────────────────────────────────────
-# 6. LOGIN MODAL (inline, only shown when needed)
-# ─────────────────────────────────────────────────────────────────────
+
 if not is_logged_in and st.session_state.get("_show_login", False):
     with st.container():
         _, mc, _ = st.columns([1, 2, 1])
@@ -725,9 +710,7 @@ if not is_logged_in and st.session_state.get("_show_login", False):
                             else:
                                 st.error(msg2)
 
-# ─────────────────────────────────────────────────────────────────────
-# 7. GUEST BANNER — one clean bar with single login button
-# ─────────────────────────────────────────────────────────────────────
+
 if not is_logged_in and not st.session_state.get("_show_login", False):
     gb1, gb2 = st.columns([5, 1])
     with gb1:
@@ -743,9 +726,7 @@ if not is_logged_in and not st.session_state.get("_show_login", False):
             st.session_state._show_login = True
             st.rerun()
 
-# ─────────────────────────────────────────────────────────────────────
-# 8. DATA — defect info, model loaders
-# ─────────────────────────────────────────────────────────────────────
+
 CLASSES = ["Bird-drop","Clean","Dusty","Electrical-damage","Physical-Damage","Snow-Covered"]
 
 DEFECT_INFO = {
@@ -823,7 +804,6 @@ def load_effnet():
     if not os.path.exists(path):
         try:
             import requests
-            # UPDATE this URL after you upload the .pth to Hugging Face
             url = "https://huggingface.co/reem-y/solar-vgg19-mhsa/resolve/main/best_vgg19_mhsa_final.pth"
             r = requests.get(url, stream=True, timeout=180)
             with open(path, "wb") as f:
@@ -889,7 +869,7 @@ def is_solar_panel_image(image) -> bool:
     mean_g = G.mean()
     mean_b = B.mean()
     brightness  = (mean_r + mean_g + mean_b) / 3.0
-    warm_bias   = mean_r - mean_b          # positive = warm/orange (bad for solar)
+    warm_bias   = mean_r - mean_b          
 
     maxc = arr.max(axis=2) + 1e-5
     minc = arr.min(axis=2)
@@ -899,35 +879,34 @@ def is_solar_panel_image(image) -> bool:
     spatial_chaos = all_block.std()
 
     score = 0
-    if warm_bias < 40:        score += 2   # not strongly warm/orange toned
-    if brightness < 160:      score += 1   # not overly bright
-    if mean_sat < 0.45:       score += 2   # not highly colourful
-    if mean_b >= mean_r - 20: score += 1   # blue channel present
-    if spatial_chaos < 65:    score += 1   # reasonably uniform surface
+    if warm_bias < 40:        score += 2   
+    if brightness < 160:      score += 1   
+    if mean_sat < 0.45:       score += 2   
+    if mean_b >= mean_r - 20: score += 1   
+    if spatial_chaos < 65:    score += 1   
 
-    return score >= 3   # need 3 out of max 7 (more permissive)
+    return score >= 3   
 
 def preprocess_image(image):
     import cv2
     import numpy as np
     from torchvision import transforms
 
-    # Convert PIL to OpenCV BGR (same as training pipeline)
+    
     img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-    # Step 1: CLAHE on Y channel in YUV space (clipLimit=2.0, tileGridSize=8x8)
+    
     img_yuv = cv2.cvtColor(img, cv2.COLOR_BGR2YUV)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     img_yuv[:, :, 0] = clahe.apply(img_yuv[:, :, 0])
     img = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR)
 
-    # Step 2: NL-Means denoising (h=10, same as training)
     img = cv2.fastNlMeansDenoisingColored(img, None, 10, 10, 7, 21)
 
-    # Convert back to PIL RGB for torchvision transforms
+    
     image = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
 
-    # Step 3: Resize, tensor, normalise (ImageNet stats)
+    
     tf = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -935,9 +914,7 @@ def preprocess_image(image):
     ])
     return tf(image).unsqueeze(0)
 
-# ─────────────────────────────────────────────────────────────────────
-# 9. PDF
-# ─────────────────────────────────────────────────────────────────────
+
 AMIRI_PATH = os.path.join("fonts", "Amiri-Regular.ttf")
 
 def _safe_en(text):
@@ -1060,9 +1037,7 @@ def generate_pdf(pred_class,confidence,info,lang="en",user_email="",underperf=No
         pdf.multi_cell(pdf.W,5,"This report was generated automatically by SolarInspect AI. Always consult a certified PV technician before taking corrective action.",align="C")
     return bytes(pdf.output())
 
-# ─────────────────────────────────────────────────────────────────────
-# 10. TABS
-# ─────────────────────────────────────────────────────────────────────
+
 if is_admin:
     tab1,tab2,tab3,tab4,tab5 = st.tabs([
         t("🔍 Image Scan","🔍 فحص الصورة"),
@@ -1079,9 +1054,7 @@ else:
         t("📋 History","📋 السجل"),
     ])
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 1 — IMAGE SCAN
-# ═══════════════════════════════════════════════════════════════
+
 with tab1:
     if effnet_model is None:
          st.error(t("Model file not found: best_vgg19_mhsa_final.pth","ملف النموذج غير موجود."))
@@ -1109,13 +1082,12 @@ with tab1:
             pred_idx   = int(np.argmax(probs))
             pred_class = CLASSES[pred_idx]
             confidence = float(probs[pred_idx])
-            # Normalize class name to match DEFECT_INFO keys
             pred_class = pred_class.replace('Physical-Damage','Physical-damage').replace('Snow-Covered','Snow-covered')
             info       = DEFECT_INFO[pred_class]
             display    = info["display_ar"] if IS_AR else info["display_en"]
             sev        = info["severity"]
 
-            # Warn if confidence is low — likely not a solar panel image
+            
             if confidence < 0.60:
                 st.markdown(
                     f'<div style="background:#1a1a2e;border:1px solid #f5a623;border-radius:10px;'
@@ -1156,7 +1128,7 @@ with tab1:
                     <div class="urgency-box">{urgency}</div>
                 </div>""", unsafe_allow_html=True)
 
-            # ── SENSOR PARAMETERS — always visible, only saved if logged in
+            
             st.markdown(f'<div class="section-title">{t("PANEL SENSOR PARAMETERS — OPTIONAL","معطيات المستشعر — اختياري")}</div>', unsafe_allow_html=True)
 
             hint_extra = "" if is_logged_in else f' <b style="color:#f5a623;">{t("Log in to save this scan to your history.","سجّل دخولك لحفظ هذا الفحص في سجلك.")}</b>'
@@ -1180,7 +1152,7 @@ with tab1:
             with sp7: s_cap = st.number_input(t("Panel Capacity (kW)","سعة اللوح"),   min_value=0.0, max_value=1000.0,  value=0.0, step=0.1,  key="s_cap", format="%.2f")
             with sp8: s_age = st.number_input(t("Panel Age (years)","عمر اللوح"),     min_value=0,   max_value=50,      value=0,   step=1,    key="s_age")
 
-            # ── SAVE SCAN BUTTON — explicit, user-triggered
+            
             st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
             if is_logged_in:
                 already_saved = file_hash in st.session_state.saved_hashes
@@ -1221,7 +1193,7 @@ with tab1:
                     unsafe_allow_html=True,
                 )
 
-            # ── MAINTENANCE TIPS
+            
             st.markdown(f'<div class="section-title">{t("MAINTENANCE TIPS","نصائح الصيانة")}</div>', unsafe_allow_html=True)
             tips = info["tips_ar"] if IS_AR else info["tips_en"]
             tip_cols = st.columns(len(tips))
@@ -1229,7 +1201,7 @@ with tab1:
                 with tip_cols[i]:
                     st.markdown(f'<div class="tip-card"><div style="font-size:1.2rem;margin-bottom:6px;">💡</div><div class="tip-text">{tip}</div></div>', unsafe_allow_html=True)
 
-            # ── PDF EXPORT — locked for guests
+            
             st.markdown(f'<div class="section-title">{t("EXPORT REPORT","تصدير التقرير")}</div>', unsafe_allow_html=True)
             if not is_logged_in:
                 st.markdown(
@@ -1251,9 +1223,7 @@ with tab1:
                         mime="application/pdf", key="dl_pdf",
                     )
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 2 — PERFORMANCE ANALYZER
-# ═══════════════════════════════════════════════════════════════
+
 with tab2:
     st.markdown(f'<div class="section-title">{t("PANEL PERFORMANCE ANALYZER","محلل أداء اللوح")}</div>', unsafe_allow_html=True)
     if perf_model is None:
@@ -1293,9 +1263,7 @@ with tab2:
                 perf_pct=max(0,100-underperf_pct)
                 st.markdown(f'<div style="margin-top:16px;"><div style="font-family:Space Mono,monospace;font-size:0.72rem;color:{TXT_M};letter-spacing:3px;margin-bottom:8px;">{t("PERFORMANCE GAUGE","مقياس الأداء")}</div><div style="background:{BAR_BG};border-radius:8px;height:16px;"><div style="width:{perf_pct:.0f}%;height:16px;border-radius:8px;background:linear-gradient(90deg,#e74c3c,#f5a623,#2ecc71);"></div></div><div style="display:flex;justify-content:space-between;font-size:0.75rem;color:{TXT_M};margin-top:4px;"><span>0%</span><span>{t("Performance","الأداء")}: {perf_pct:.0f}%</span><span>100%</span></div></div>', unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 3 — POWER FORECAST
-# ═══════════════════════════════════════════════════════════════
+
 with tab3:
     st.markdown(f'<div class="section-title">{t("SOLAR POWER FORECAST","توقع الطاقة الشمسية")}</div>', unsafe_allow_html=True)
 
@@ -1315,13 +1283,13 @@ with tab3:
 
             forecasts, hours = [], []
             INVERTER_EFF = f_eff / 100.0
-            TEMP_COEFF   = -0.004   # typical crystalline silicon temp coefficient
+            TEMP_COEFF   = -0.004   
 
             now = _now_cairo()
             mins_past    = now.minute % 15
             start_offset = (15 - mins_past) if mins_past > 0 else 15
             base_dt      = now.replace(second=0, microsecond=0)
-            total_steps  = steps * 4   # 15-min intervals
+            total_steps  = steps * 4   
 
             for step in range(total_steps):
                 future_dt      = base_dt + __import__('datetime').timedelta(minutes=start_offset + step * 15)
@@ -1329,24 +1297,23 @@ with tab3:
                 minute_of_hour = future_dt.minute
 
                 if 6 <= hour_of_day <= 19:
-                    # Sinusoidal solar angle (6 AM = 0, noon = peak, 7 PM = 0)
                     angle        = (hour_of_day - 6 + minute_of_hour / 60) / 13 * np.pi
                     solar_factor = max(0.0, float(np.sin(angle)))
                 else:
                     solar_factor = 0.0
 
-                # Temperature derating: panels lose ~0.4% per °C above 25°C
+                
                 temp_factor  = 1 + TEMP_COEFF * max(0, f_mod - 25)
 
-                # AC power = irradiation × capacity × solar angle × temp derating × inverter efficiency
+                
                 ac_power_fc  = max(0.0,
                     f_irr * f_cap * solar_factor * temp_factor * INVERTER_EFF
-                    + float(np.random.normal(0, 0.005 * f_cap))   # small realistic noise
+                    + float(np.random.normal(0, 0.005 * f_cap))   
                 )
                 forecasts.append(round(ac_power_fc, 3))
                 hours.append(future_dt.strftime("%H:%M"))
 
-        # ── Chart ───────────────────────────────────────────────────────
+        
         import plotly.graph_objects as go
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -1367,7 +1334,7 @@ with tab3:
         )
         st.plotly_chart(fig, use_container_width=True, key="fc_chart")
 
-        # ── Summary metrics ─────────────────────────────────────────────
+        
         s1, s2, s3 = st.columns(3)
         avg_power  = float(np.mean(forecasts))
         peak_power = float(np.max(forecasts))
@@ -1387,9 +1354,7 @@ with tab3:
                     f'</div>',
                     unsafe_allow_html=True,
                 )
-# ═══════════════════════════════════════════════════════════════
-# TAB 4 — HISTORY
-# ═══════════════════════════════════════════════════════════════
+
 with tab4:
     st.markdown(f'<div class="section-title">{t("SCAN HISTORY","سجل الفحص")}</div>', unsafe_allow_html=True)
     if not is_logged_in:
@@ -1414,7 +1379,7 @@ with tab4:
             st.error(f"Could not load history: {e}")
             user_history = []
 
-        # Build email list for filter (all users if admin)
+        
         if is_admin:
             all_emails = sorted(set(h["email"] for h in user_history if h["email"]))
             filter_opts = [t("All Users","جميع المستخدمين")] + all_emails
@@ -1422,7 +1387,7 @@ with tab4:
             if sel_user not in ("All Users", "جميع المستخدمين"):
                 user_history = [h for h in user_history if h["email"] == sel_user]
 
-        # Apply 30 scan limit after filtering
+        
         user_history = user_history[:30]
 
         if not user_history:
@@ -1478,9 +1443,7 @@ with tab4:
                 db_delete_scans(target)
                 st.rerun()
 
-# ═══════════════════════════════════════════════════════════════
-# TAB 5 — DATASET (ADMIN ONLY)
-# ═══════════════════════════════════════════════════════════════
+
 if is_admin:
     with tab5:
         st.markdown(f"""
@@ -1496,9 +1459,7 @@ if is_admin:
         st.markdown(f'<div class="section-title">DATASET BROWSER</div>', unsafe_allow_html=True)
         render_dataset_tab(TXT=TXT,TXT_M=TXT_M,TXT_S=TXT_S,BG_CARD=BG_CARD,BORDER=BORDER,BAR_BG=BAR_BG,IS_AR=IS_AR,DM=DM)
 
-# ─────────────────────────────────────────────────────────────────────
-# FOOTER
-# ─────────────────────────────────────────────────────────────────────
+
 st.markdown(f"""
 <div class="site-footer">
     <div class="footer-brand">☀️ &nbsp;@Solar<span>Inspect</span> AI 2026</div>
