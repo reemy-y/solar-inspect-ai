@@ -1,10 +1,3 @@
-"""
-dataset_tab.py — Admin-only dataset panel for SolarInspect AI.
-- STATIC DATASET (solar_data.csv in Supabase Storage) → analysis only
-- SCAN LOG (scans table in PostgreSQL) → written on every user scan
-- ADMIN MERGE → admin approves pending scans into static CSV
-"""
-
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -13,16 +6,14 @@ import psycopg2
 import psycopg2.extras
 from datetime import datetime
 
-# ─────────────────────────────────────────────────────────────────────
-# SECRETS — read from st.secrets first, fallback to os.environ
-# ─────────────────────────────────────────────────────────────────────
+
 def _get_secret(key, default=""):
     try:
         return st.secrets[key]
     except Exception:
         return os.environ.get(key, default)
 
-SUPABASE_URL    = ""   # resolved at call time via _get_secret
+SUPABASE_URL    = ""   
 SUPABASE_KEY    = ""
 STORAGE_BUCKET  = "solar-data"
 STORAGE_CSV_KEY = "solar_data.csv"
@@ -35,9 +26,7 @@ CSV_COLUMNS = [
     "panel_capacity_kw", "panel_age_years",
 ]
 
-# ─────────────────────────────────────────────────────────────────────
-# DB CONNECTION
-# ─────────────────────────────────────────────────────────────────────
+
 def _db():
     conn = psycopg2.connect(
         host    = _get_secret("DB_HOST"),
@@ -49,9 +38,7 @@ def _db():
     )
     return conn
 
-# ─────────────────────────────────────────────────────────────────────
-# SUPABASE STORAGE
-# ─────────────────────────────────────────────────────────────────────
+
 def _storage_headers():
     key = _get_secret("SUPABASE_SERVICE_KEY")
     return {
@@ -72,7 +59,6 @@ def load_static_dataset() -> pd.DataFrame:
         if r.status_code == 200:
             from io import StringIO
             df = pd.read_csv(StringIO(r.text))
-            # Repair any blank/nan/none timestamps in place
             if "timestamp" in df.columns:
                 df["timestamp"] = df["timestamp"].apply(
                     lambda v: pd.NaT if pd.isna(v) or str(v).strip().lower() in ("", "nan", "none", "nat", "—")
@@ -103,9 +89,7 @@ def _save_csv_to_storage(df: pd.DataFrame) -> bool:
         st.error(f"Storage upload failed: {e}")
         return False
 
-# ─────────────────────────────────────────────────────────────────────
-# PENDING SCANS — from PostgreSQL scans table
-# ─────────────────────────────────────────────────────────────────────
+
 def _get_pending_scans() -> pd.DataFrame:
     conn = _db()
     try:
@@ -155,7 +139,7 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
     new_rows = []
     for _, row in pending_df.iterrows():
         ts = row["scanned_at"]
-        # Use the DB timestamp directly — it was saved with Cairo time from app.py
+        
         try:
             if hasattr(ts, "strftime"):
                 ts_str  = ts.strftime("%Y-%m-%d %H:%M:%S")
@@ -211,9 +195,7 @@ def _merge_pending_into_csv(pending_df: pd.DataFrame, static_df: pd.DataFrame) -
             new_df[col] = ""
     merged = pd.concat([static_df[CSV_COLUMNS], new_df[CSV_COLUMNS]], ignore_index=True)
     return merged
-# ─────────────────────────────────────────────────────────────────────
-# MAIN RENDER
-# ─────────────────────────────────────────────────────────────────────
+
 def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
 
     def t(en, ar):
@@ -241,9 +223,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
                 unsafe_allow_html=True,
             )
 
-    # ═══════════════════════════════════════════════════════
-    # SECTION 1 — STATIC DATASET ANALYSIS
-    # ═══════════════════════════════════════════════════════
+    
     section("APPROVED DATASET — STATIC ANALYSIS", "البيانات المعتمدة — تحليل ثابت")
     st.markdown(
         f'<div style="background:{BG_CARD};border:1px solid {BORDER};border-radius:10px;'
@@ -321,7 +301,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         sel_u  = st.selectbox(t("Filter by user", "تصفية حسب المستخدم"), users, key="dst_user")
         freal  = real if sel_u in ("All Users", "جميع المستخدمين") else real[real["panel_id"] == sel_u]
 
-        # All columns — horizontal scroll via st.dataframe with wide layout
+        
         all_show_cols = [c for c in [
             "timestamp", "panel_id", "defect_type", "severity", "confidence",
             "irradiation", "ambient_temp_c", "module_temp_c",
@@ -331,13 +311,13 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
 
         disp = freal[all_show_cols].copy()
 
-        # Clean timestamps
+        
         if "timestamp" in disp.columns:
             disp["timestamp"] = disp["timestamp"].apply(
                 lambda v: "—" if pd.isna(v) or str(v).strip().lower() in ("nan","none","nat","") else str(v)[:16]
             )
 
-        # Rename columns to friendly labels
+        
         rename_map = {
             "timestamp":         t("Time",        "الوقت"),
             "panel_id":          t("User",         "المستخدم"),
@@ -355,7 +335,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
         }
         disp = disp.rename(columns=rename_map).sort_values(t("Time","الوقت"), ascending=False)
 
-        # Use st.dataframe with column_config for better display + horizontal scroll
+        
         st.dataframe(
             disp,
             use_container_width=True,
@@ -374,7 +354,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             key="dst_dl",
         )
 
-        # ── SENSOR PARAMETER LINE CHARTS
+        
         SENSOR_PARAMS = [
             ("irradiation",       t("Irradiation (W/m²/1000)", "الإشعاع الشمسي"),          "#f5a623"),
             ("ambient_temp_c",    t("Ambient Temp (°C)",        "حرارة المحيط"),             "#3498db"),
@@ -386,7 +366,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             ("panel_age_years",   t("Panel Age (years)",        "عمر اللوح"),                "#95a5a6"),
         ]
 
-        # Only show charts for columns that have at least some data
+        
         available = [
             (col, label, color) for col, label, color in SENSOR_PARAMS
             if col in real.columns and real[col].replace("", float("nan")).dropna().shape[0] > 0
@@ -426,19 +406,19 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
                         col_data = col_data.dropna(subset=[col]).reset_index(drop=True)
                         if col_data.empty:
                             continue
-                        # Rolling mean — window=50 or length of data whichever is smaller
+                        
                         window = min(50, max(1, len(col_data) // 5))
                         col_data["smoothed"] = col_data[col].rolling(window=window, min_periods=1, center=True).mean()
 
                         fig = go.Figure()
-                        # Raw data faint line
+                        
                         fig.add_trace(go.Scatter(
                             x=col_data["timestamp"], y=col_data[col],
                             mode="lines", name=t("Raw","خام"),
                             line=dict(color=color, width=1, dash="dot"),
                             opacity=0.3,
                         ))
-                        # Smoothed line prominent
+                        
                         fig.add_trace(go.Scatter(
                             x=col_data["timestamp"], y=col_data["smoothed"],
                             mode="lines", name=t("Avg","متوسط"),
@@ -468,9 +448,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
                 unsafe_allow_html=True,
             )
 
-    # ═══════════════════════════════════════════════════════
-    # SECTION 2 — ADMIN MERGE PANEL
-    # ═══════════════════════════════════════════════════════
+    
     st.markdown("<hr style='border:1px solid #2e3a50;margin:32px 0;'>", unsafe_allow_html=True)
     section("PENDING SCANS — MERGE INTO DATASET", "الفحوصات المعلقة — دمج في البيانات")
 
@@ -526,7 +504,6 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
             conf_pct   = f"{conf:.0%}" if conf<=1.0 else f"{conf:.0f}%"
             email      = str(row.get("email",""))
             ts         = row.get("scanned_at")
-            # Use the DB timestamp as-is (already correct Cairo time from INSERT)
             ts_str     = ts.strftime("%Y-%m-%d %H:%M") if hasattr(ts,"strftime") else str(ts)[:16]
 
             card_col, btn_col = st.columns([5, 2])
@@ -562,9 +539,7 @@ def render_dataset_tab(TXT, TXT_M, TXT_S, BG_CARD, BORDER, BAR_BG, IS_AR, DM):
                         st.toast(t("🗑 Scan discarded.","🗑 تم التجاهل."))
                         st.rerun()
 
-    # ═══════════════════════════════════════════════════════
-    # SECTION 3 — MANUAL CSV UPLOAD
-    # ═══════════════════════════════════════════════════════
+    
     st.markdown("<hr style='border:1px solid #2e3a50;margin:32px 0;'>", unsafe_allow_html=True)
     section("MANUAL DATASET UPLOAD — REPLACE STATIC CSV", "رفع البيانات يدوياً — استبدال الملف")
 
